@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { BackendManager } from "./backend-manager";
 import { windowLayout } from "./window-layout";
-import { ControllerModuleManager } from "./controller-module-manager";
+import { ControllerHub } from "./controller-hub";
 import { fastGithubManager } from "./fastgithub-manager";
 import { ensurePackageDataConfig, packageExtractRoot } from "./package-extractor";
 import { UpdateManager } from "./update-manager";
@@ -65,7 +65,7 @@ const hddSegatoolsTopLevel = [
 ] as const;
 
 const backend = new BackendManager();
-const controllerManager = new ControllerModuleManager();
+const controllerManager = new ControllerHub();
 const packageManifestUrl =
   "https://raw.githubusercontent.com/lynshp/OptionPackage/main/manifest.json";
 // Option packages and Mods are published together in the 1.5_Options Release.
@@ -1434,6 +1434,7 @@ ipcMain.handle("controller:restart", () => controllerManager.restart());
 ipcMain.handle("controller:release-all", () => controllerManager.releaseAll());
 ipcMain.handle("controller:virtual-key", (_event, key: string, pressed: boolean) => controllerManager.setVirtualKey(key, pressed));
 ipcMain.handle("controller:mode", (_event, keyboardMouse: boolean) => controllerManager.setMode(keyboardMouse));
+ipcMain.handle("controller:input-mode", (_event, mode: number) => controllerManager.setInputMode(mode));
 ipcMain.handle("controller:brightness", (_event, brightness: number) => controllerManager.setBrightness(brightness));
 ipcMain.handle("controller:custom-color", (_event, red: number, green: number, blue: number) => controllerManager.setCustomColor(red, green, blue));
 ipcMain.handle("controller:pico-lighting", (_event, request: any) => controllerManager.setPicoLighting(request));

@@ -18,6 +18,10 @@ Electron validates module compatibility and the ready/health handshake before ex
 It releases virtual keys on focus loss and shutdown, restarts a failed process, and stops the controller
 before installing an application update. A controller failure does not prevent resource browsing.
 
+SimGEKI and IO4-compatible HID input is implemented directly in the Electron main process under
+`electron/simgeki-io4-controller.ts`. `electron/controller-hub.ts` combines that reader with the legacy
+controller process without routing SimGEKI through the deprecated provider SDK.
+
 Public integration code describes application operations and typed snapshots only. Device wire formats,
 firmware, calibration algorithms and hardware documentation are maintained separately and are not part of
 this source distribution. The controller binary uses a separate proprietary license.

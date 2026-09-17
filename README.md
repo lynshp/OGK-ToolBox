@@ -39,11 +39,10 @@ npm run dev
 
 详情见 [架构](docs/ARCHITECTURE.md)、[发布](docs/RELEASING.md)。
 
-## 其他控制器
+## 控制器支持
 
-开发者可通过独立进程接口接入其他控制器，无需原控制器源码。提供了 MIT 授权的 SDK、
-只读模拟示例和[接入文档](docs/CONTROLLER-PROVIDERS.md)。使用 `OGK_CONTROLLER_MODULE_DIR`
-显式选择模块，默认使用内置模块。
+Electron 主进程内置 NYAGEKI、LUXIS、SimGEKI 与标准 IO4 兼容输入支持。SimGEKI / IO4 的设备标识、
+输入报告和模式配置见[通信说明](docs/SIMGEKI-IO4.md)。旧的外部 provider SDK 已废弃，不再用于新增控制器。
 
 ## 用户数据
 

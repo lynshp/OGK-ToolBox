@@ -244,7 +244,8 @@ export function ControllerPage({ gameRoot = "", onConfigurationChanged }: Contro
   const releaseAll = useCallback(() => { void window.ogk.controllerReleaseAll().catch(() => {}); }, []);
   const connected = moduleStatus.state === "ready" && isOnline(snapshot);
   const keyboardOnly = !connected && keyboardInputEnabled;
-  const connectedDeviceName = snapshot.identity.kind === "Leonardo" ? "NYAGEKI" : snapshot.identity.kind === "Pico" ? "LUXIS" : null;
+  const connectedDeviceName = snapshot.identity.kind === "Leonardo" ? "NYAGEKI" : snapshot.identity.kind === "Pico" ? "LUXIS" :
+    snapshot.identity.kind === "SimGEKI" ? "SimGEKI" : snapshot.identity.kind === "IO4Compatible" ? "IO4" : null;
 
   useEffect(() => () => {
     if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
@@ -575,7 +576,7 @@ export function ControllerPage({ gameRoot = "", onConfigurationChanged }: Contro
   return <div className={`controller-page ${connected ? "is-connected" : "is-disconnected"} ${keyboardOnly ? "is-keyboard-input" : ""} ${configurationReadbackPending ? "is-config-readback" : ""}`}>
      <div className="controller-page-header">
        <div><h1 key={connected ? "connected" : keyboardOnly ? "keyboard-input" : "disconnected"}>控制器</h1><p>{connected ? "Signal-first tuning console · 1440 × 900" : keyboardOnly ? "已启用 Segatools 键盘输入 · 未连接硬件控制器" : "未检测到兼容控制器 · 请连接设备后重新扫描"}</p></div>
-       <div className="controller-page-actions"><span className="controller-supported-devices">{!connected && <span>已支持设备：</span>}{(!connected || connectedDeviceName === "NYAGEKI") && <b className={`controller-supported-device ${connectedDeviceName === "NYAGEKI" && connected ? "is-connected" : ""}`}>NYAGEKI</b>}{(!connected || connectedDeviceName === "LUXIS") && <b className={`controller-supported-device ${connectedDeviceName === "LUXIS" && connected ? "is-connected" : ""}`}>LUXIS</b>}</span>{connected ? <button type="button" className="controller-refresh" disabled={refreshing} onClick={rescan}>刷新设备</button> : <span className={`connection-chip ${keyboardOnly ? "is-keyboard-input" : ""}`}><i />{keyboardOnly ? "键盘输入" : "未连接"}</span>}</div>
+       <div className="controller-page-actions"><span className="controller-supported-devices">{!connected && <span>已支持设备：</span>}{(["NYAGEKI", "LUXIS", "SimGEKI", "IO4"] as const).map(name => (!connected || connectedDeviceName === name) && <b key={name} className={`controller-supported-device ${connectedDeviceName === name && connected ? "is-connected" : ""}`}>{name}</b>)}</span>{connected ? <button type="button" className="controller-refresh" disabled={refreshing} onClick={rescan}>刷新设备</button> : <span className={`connection-chip ${keyboardOnly ? "is-keyboard-input" : ""}`}><i />{keyboardOnly ? "键盘输入" : "未连接"}</span>}</div>
      </div>
      {keyboardInputNotice && <div className="controller-config-toast" role="status" aria-live="polite">{keyboardInputNotice}</div>}
      {connected || keyboardOnly ? <>
@@ -618,16 +619,21 @@ function InputMonitor({ snapshot, virtualButtons, keyboardHeldKeys, keyboardBind
 function InformationPanel({ snapshot, command, keyboardInputOnly = false }: { snapshot: ControllerSnapshot; command: ControllerCommandInvoker; keyboardInputOnly?: boolean }): ReactElement {
   const caps = snapshot.capabilities;
   const picoInformationAvailable = snapshot.identity.kind === "Pico" && !keyboardInputOnly;
+  const io4Controller = snapshot.identity.kind === "SimGEKI" || snapshot.identity.kind === "IO4Compatible";
   const kmMode = snapshot.deviceConfig.isKmMode;
   const currentMode = snapshot.identity.kind === "Pico"
     ? snapshot.deviceConfig.inputMode === 1 ? "微动模式" : "磁轴模式"
     : kmMode ? "模拟键鼠" : "MU3IO";
   const modeWritable = isConfigurationUiWritable(snapshot) && caps.mode;
+  const modeControl = io4Controller ? modeWritable
+    ? <div className="input-mode-segmented" role="group" aria-label="SimGEKI 输入模式">{([[1, "IO4"], [2, "DLL"], [3, "模拟键盘"]] as const).map(([mode, label]) => <button type="button" key={mode} className={snapshot.deviceConfig.inputMode === mode ? "selected" : ""} onClick={() => void command(() => window.ogk.controllerSetInputMode(mode))}>{label}</button>)}</div>
+    : <span>{snapshot.deviceConfig.inputMode === 2 ? "DLL" : snapshot.deviceConfig.inputMode === 3 ? "模拟键盘" : "IO4 兼容"}</span>
+    : <div className="input-mode-segmented" role="group" aria-label="输入模式"><button type="button" className={!kmMode ? "selected" : ""} disabled={!modeWritable} onClick={() => void command(() => window.ogk.controllerSetMode(false))}>MU3IO</button><button type="button" className={kmMode ? "selected" : ""} disabled={!modeWritable} onClick={() => void command(() => window.ogk.controllerSetMode(true))}>模拟键鼠</button></div>;
   return <div className="information-content">
     <div className="identity-box"><span>当前连接的控制器</span><b>{keyboardInputOnly ? "键盘" : controllerDisplayName(snapshot)}</b></div>
     <InfoRow label="控制器名称" value={keyboardInputOnly ? "—" : controllerDisplayName(snapshot)} />
     <InfoRow label="固件版本" value={snapshot.identity.firmware === "—" ? "—" : `v${snapshot.identity.firmware}`} />
-    <InfoRow label="输入模式" value={<div className="input-mode-segmented" role="group" aria-label="输入模式"><button type="button" className={!kmMode ? "selected" : ""} disabled={!modeWritable} onClick={() => void command(() => window.ogk.controllerSetMode(false))}>MU3IO</button><button type="button" className={kmMode ? "selected" : ""} disabled={!modeWritable} onClick={() => void command(() => window.ogk.controllerSetMode(true))}>模拟键鼠</button></div>} />
+    <InfoRow label="输入模式" value={modeControl} />
     {(picoInformationAvailable || keyboardInputOnly) && <InfoRow label="读卡器卡号" value={keyboardInputOnly ? "—" : snapshot.card.present ? `${snapshot.card.type} · ${snapshot.card.identifier}` : "未检测到"} />}
     {(picoInformationAvailable || keyboardInputOnly) && <InfoRow label="供电线" value={keyboardInputOnly ? "—" : "未提供遥测"} />}
     {(picoInformationAvailable || keyboardInputOnly) && <InfoRow label="当前模式" value={keyboardInputOnly ? "—" : currentMode} accent />}
@@ -795,6 +801,9 @@ function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardI
   // drag can update the local draft and collapse into the newest command.
   const leverSettingsUiWritable = deviceConfigFresh && isDeviceConfigUiAvailable(snapshot) && snapshot.capabilities.leverConfiguration;
   const leverCalibrationAvailable = isConfigurationUiWritable(snapshot) && snapshot.capabilities.leverCalibration;
+  const inputOnly = !snapshot.capabilities.basicLighting && !snapshot.capabilities.picoLighting &&
+    !snapshot.capabilities.hallConfiguration && !snapshot.capabilities.hallCalibration &&
+    !snapshot.capabilities.leverConfiguration && !snapshot.capabilities.leverCalibration;
   const lightingRef = useRef(lighting);
   useEffect(() => () => {
     if (leverTimer.current !== null) window.clearTimeout(leverTimer.current);
@@ -1039,6 +1048,7 @@ function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardI
   };
   const setCabPreset = (value: number) => applyLighting({ ...lightingRef.current, cabPreset: value });
   const toggleCabGameMapping = () => applyLighting({ ...lightingRef.current, cabGameMapping: !lightingRef.current.cabGameMapping });
+  if (inputOnly) return <div className="controller-accordions"><section className="controller-accordion input-only-accordion"><div className="accordion-heading"><h3>IO4 输入</h3><span>ⓘ</span></div><div className="joystick-unavailable">当前控制器提供标准 IO4 输入监视；未声明灯光、磁轴或摇杆配置能力。</div></section></div>;
   return <div className={`controller-accordions ${disabled ? "is-keyboard-disabled" : ""}`} aria-disabled={disabled || undefined}>
     <fieldset className="controller-configuration-fieldset" disabled={disabled}>
     <section className="controller-accordion lighting-accordion">

@@ -4,6 +4,7 @@ const repo = process.env.OGK_GITHUB_REPO || "OGKToolBox-releases";
 const config = {
   appId: "com.ogk.toolbox",
   productName: "OGK ToolBox",
+  npmRebuild: false,
   icon: "build/toolbox-icon.ico",
   win: { icon: "build/toolbox-icon.ico", target: ["nsis"] },
   nsis: {

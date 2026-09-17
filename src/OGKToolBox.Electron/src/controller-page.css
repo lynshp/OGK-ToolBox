@@ -578,6 +578,7 @@
 .primary-action { border-color: #d94c1b !important; background: #d94c1b !important; color: #fff !important; }
 
 .controller-accordions { position: relative; top: -1px; display: grid; height: 175px; min-height: 175px; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+.controller-accordions .input-only-accordion { grid-column: 1 / -1; }
 .controller-accordion { height: 160px; min-height: 160px; padding: 12px 14px; }
 .lighting-accordion { position: relative; height: 175px; min-height: 175px; }
 .joystick-accordion { position: relative; margin-top: 15px; }

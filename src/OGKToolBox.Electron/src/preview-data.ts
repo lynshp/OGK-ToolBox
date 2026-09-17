@@ -213,6 +213,7 @@ export function installPreviewBridge(expressionError: boolean): void {
     controllerReleaseAll: async () => ({ commandId: "preview", status: "Verified", message: "虚拟按键已全部释放。", snapshot: controllerSnapshot }),
     controllerVirtualKey: async () => ({ commandId: "preview", status: "Accepted", message: "虚拟按键命令已接受。", snapshot: controllerSnapshot }),
     controllerSetMode: async (keyboardMouse: boolean) => { keyboardMouseCabGameMapping = controllerSnapshot.deviceConfig.cabGameMapping; controllerSnapshot.deviceConfig.isKmMode = keyboardMouse; controllerSnapshot.deviceConfig.cabGameMapping = keyboardMouseCabGameMapping; controllerSnapshot.state = "Ready"; return controllerResult(keyboardMouse ? "已切换到模拟键鼠模式。" : "已切换到 MU3IO 模式。"); },
+    controllerSetInputMode: async (mode: number) => { controllerSnapshot.deviceConfig.inputMode = mode; controllerSnapshot.deviceConfig.isKmMode = mode === 3; return controllerResult("输入模式已更新。"); },
     controllerSetBrightness: async (brightness: number) => { controllerSnapshot.deviceConfig.brightness = Math.max(0, Math.min(255, Math.round(brightness))); return controllerResult("亮度已即时应用。"); },
     controllerSetCustomColor: async (red: number, green: number, blue: number) => { controllerSnapshot.deviceConfig.groundColor = [red, green, blue]; controllerSnapshot.deviceConfig.sideColor = [red, green, blue]; return controllerResult("按键灯颜色已即时应用。"); },
     controllerSetPicoLighting: async (request: PicoLightingRequest) => { applyLighting(request); return controllerResult("灯光已即时应用。"); },

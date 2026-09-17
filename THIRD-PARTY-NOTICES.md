@@ -8,6 +8,7 @@ third-party files or proprietary controller binaries merely because they are sto
 | `src/OGKToolBox.Electron/resources/controller` | Proprietary precompiled module; see its `LICENSE.txt`. No controller source is included. |
 | `src/OGKToolBox.Electron/resources/NYAGEKI_IO.dll` | Proprietary game IO component; see `NYAGEKI_IO.LICENSE.txt`. |
 | FastGithub and dnscrypt-proxy | See the LICENSE files supplied under `assets/fastgithub`. |
+| `node-hid` / `hidapi` | MIT/X11 and hidapi terms; license files are distributed with the packaged npm dependency. |
 | BepInEx, Harmony, Mono.Cecil, MonoMod and other bundled dependencies | Retain their respective upstream licenses, copyright notices and attribution requirements. |
 | Bundled game integration files, ICF, images and audio | Third-party works, excluded from the root MIT grant. The maintainer has confirmed redistribution of the supplied assets; this is not a grant to modify their third-party licenses. |
 
