@@ -9,7 +9,7 @@ namespace OGKToolBox.Infrastructure.Indexing;
 
 public sealed class SqliteLibraryIndex : ILibraryIndex
 {
-    private const string CacheSchemaVersion = "5";
+    private const string CacheSchemaVersion = "6";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.General);
     private readonly string? _databasePathOverride;
 

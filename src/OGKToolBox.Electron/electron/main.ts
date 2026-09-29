@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveGameDirectory } from "./game-directory";
 import { BackendManager } from "./backend-manager";
 import { windowLayout } from "./window-layout";
 import { ControllerHub } from "./controller-hub";
@@ -12,7 +13,7 @@ import { fastGithubManager } from "./fastgithub-manager";
 import { ensurePackageDataConfig, packageExtractRoot } from "./package-extractor";
 import { UpdateManager } from "./update-manager";
 
-type Installation = { installationId: string; displayName: string };
+type Installation = { installationId: string; displayName: string; gameRoot: string };
 type Page<T> = { items: T[]; total: number; offset: number; limit: number };
 type Summary = {
   installationId: string; musicCount: number; cardCount: number; characterCount: number;
@@ -261,9 +262,11 @@ async function installation(root: string): Promise<Installation> {
   const key = normalizeRoot(String(root ?? ""));
   const cached = installations.get(key);
   if (cached) return cached;
-  const registered = await backend.request<Installation>("/api/installations", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rootPath: root })
-  });
+  const gameRoot = await resolveGameDirectory(root);
+  const registered = { ...await backend.request<Installation>("/api/installations", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rootPath: gameRoot })
+  }), gameRoot };
+  installations.set(normalizeRoot(gameRoot), registered);
   installations.set(key, registered);
   return registered;
 }
@@ -308,7 +311,7 @@ async function librarySummary(root: string): Promise<Summary & { gameRoot: strin
   // Restoring a large index also deserializes its snapshot and checks Option data.
   // It is disk work, so the normal five-second IPC request budget is too short.
   const summary = await backend.request<Summary>(`/api/installations/${id}/summary`, {}, 120_000);
-  return { ...summary, gameRoot: root };
+  return { ...summary, gameRoot: registered.gameRoot };
 }
 
 async function optionPackages(root: string) {
@@ -1012,7 +1015,8 @@ async function resourcePage(root: string, offset: number, limit: number, search:
 }
 
 async function scan(root: string, onProgress?: (status: ScanStatus) => void) {
-  const registered = await installation(root);
+  // Revalidate on every retry, including a previously registered directory.
+  const registered = await installation(await resolveGameDirectory(root));
   const publish = (status: ScanStatus) => onProgress?.(status);
   let status = await backend.request<ScanStatus>(`/api/installations/${encodeURIComponent(registered.installationId)}/scans`, { method: "POST" });
   publish(status);
@@ -1021,9 +1025,9 @@ async function scan(root: string, onProgress?: (status: ScanStatus) => void) {
     status = await backend.request<ScanStatus>(`/api/scans/${encodeURIComponent(status.id)}`);
     publish(status);
   }
-  if (status.state !== "Completed") throw new Error(status.error ?? `扫描未完成（${status.state}）。`);
+  if (status.state !== "Completed") throw new Error(`扫描未完成，无法更新资源清单。\n游戏目录：${registered.gameRoot}\n出错阶段：${status.phase || "扫描资源"}\n${status.currentItem ? `当前文件：${status.currentItem}\n` : ""}详细原因：${status.error ?? status.state}\n请确认目录可访问后重试；重试会重新扫描并建立资源清单。`);
   thumbnailMemoryCache.clear();
-  return snapshot(root);
+  return snapshot(registered.gameRoot);
 }
 
 async function configuration(root: string) {
@@ -1108,7 +1112,7 @@ function createWindow(): void {
 }
 
 ipcMain.handle("dialog:game-directory", async () => {
-  const result = await dialog.showOpenDialog({ title: "选择游戏 package 目录", properties: ["openDirectory"] });
+  const result = await dialog.showOpenDialog({ title: "选择 package 或包含它的上层文件夹", properties: ["openDirectory"] });
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle("library:scan", (event, root: string) => scan(root, status => {
@@ -1169,7 +1173,7 @@ function launcherScript(options?: Partial<GameLaunchOptions>): string {
 async function prepareGameLauncher(root: string, options?: Partial<GameLaunchOptions>): Promise<{ launcher: string; fileName: string }> {
   const requestedRoot = String(root ?? "").trim();
   if (!requestedRoot) throw new Error("请先选择游戏目录。");
-  const gameRoot = path.resolve(requestedRoot);
+  const gameRoot = await resolveGameDirectory(requestedRoot);
   const launcher = path.join(gameRoot, "OGKToolBox-Launch.bat");
   await fs.writeFile(launcher, launcherScript(options), "ascii");
   return { launcher, fileName: path.basename(launcher) };

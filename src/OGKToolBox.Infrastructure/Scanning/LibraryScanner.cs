@@ -64,6 +64,7 @@ public sealed class LibraryScanner(
             progress?.Report(new("更新 Option 资源", indexValue + 1, Math.Max(optionPackages.Length, 1), package.Id));
         }
 
+        resourceVariants = ResolveDuplicateResources(resourceVariants, diagnostics);
         var effectiveResources = resourceVariants
             .GroupBy(resource => resource.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.MaxBy(resource => resource.Origin.LoadOrder)!, StringComparer.OrdinalIgnoreCase);
@@ -222,6 +223,7 @@ public sealed class LibraryScanner(
             progressReporter.Report("枚举资源", indexValue + 1, resourceFiles.Count, path, indexValue + 1);
         }
 
+        resourceVariants = ResolveDuplicateResources(resourceVariants, diagnostics);
         var effectiveResources = resourceVariants
             .GroupBy(resource => resource.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.MaxBy(resource => resource.Origin.LoadOrder)!, StringComparer.OrdinalIgnoreCase);
@@ -316,6 +318,29 @@ public sealed class LibraryScanner(
         await index.SaveAsync(snapshot, cancellationToken);
         progressReporter.Report("完成", 1, 1, null, overallTotal, true);
         return snapshot;
+    }
+
+    // One physical file per logical resource within a package. Keep package override ordering intact.
+    private static List<GameResource> ResolveDuplicateResources(
+        IEnumerable<GameResource> source, ConcurrentBag<LibraryDiagnostic> diagnostics)
+    {
+        var selected = new List<GameResource>();
+        foreach (var package in source.GroupBy(item => item.Origin.PackageId, StringComparer.OrdinalIgnoreCase))
+        foreach (var group in package.GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            // Prefer the shallowest path, then use an ordinal path order so scans never depend on enumeration order.
+            var ordered = group.OrderBy(item => item.BundlePath.Count(character => character is '/' or '\\'))
+                .ThenBy(item => item.BundlePath, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.BundlePath, StringComparer.Ordinal).ToArray();
+            var chosen = ordered[0];
+            selected.Add(chosen);
+            foreach (var duplicate in ordered.Skip(1))
+                diagnostics.Add(new(DiagnosticSeverity.Error, "RESOURCE_DUPLICATE",
+                    $"数据包 {package.Key} 中有重名资源“{chosen.Key}”。已继续加载，同包内优先使用目录层级较浅的文件；层级相同时按路径名称排序选择。" +
+                    $"\n已使用：{chosen.BundlePath}\n已跳过：{duplicate.BundlePath}\n没有删除或修改这些文件，请核对是否混入备份或重复解压的文件。",
+                    duplicate.BundlePath));
+        }
+        return selected;
     }
 
     private static IReadOnlyList<T> Effective<T, TKey>(IEnumerable<T> source, Func<T, TKey> key, Func<T, int> order)

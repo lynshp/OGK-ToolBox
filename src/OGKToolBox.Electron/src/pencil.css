@@ -2017,3 +2017,7 @@ body { min-width: 0; }
 .dark .launch-play {
   color: #f5f7fa;
 }
+
+/* Keep duplicate-resource paths readable in the existing report table. */
+.diagnostic-row > span:nth-child(3),.diagnostic-row > small { white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
+.diagnostic-row > .severity { align-self:start; justify-self:start; }
