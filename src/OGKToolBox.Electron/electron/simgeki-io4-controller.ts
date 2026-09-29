@@ -8,14 +8,15 @@ import type { ControllerCommandResult, ControllerModuleStatus, ControllerSnapsho
 type HidModule = typeof import("node-hid");
 type SnapshotListener = (snapshot: ControllerSnapshot) => void;
 type StatusListener = (status: ControllerModuleStatus) => void;
-type ConfigPending = { resolve(value: Buffer): void; reject(error: unknown): void; timer: ReturnType<typeof setTimeout> };
+type ConfigPending = { command: number; resolve(value: Buffer): void; reject(error: unknown): void;
+  timer: ReturnType<typeof setTimeout> };
 type ProductNameResolver = (device: Device) => Promise<string | undefined>;
 
 const execFileAsync = promisify(execFile);
 
 const inputReportId = 0x01;
 const configReportId = 0xaa;
-const commands = { inputModeGet: 0x01, inputModeSet: 0x02, save: 0x81 } as const;
+const commands = { inputModeGet: 0x01, inputModeSet: 0x02, save: 0x81, rollerSetOffset: 0xa0 } as const;
 const inputModes = [
   { id: "1", label: "IO4" }, { id: "2", label: "DLL" }, { id: "3", label: "模拟键盘" }
 ];
@@ -32,10 +33,10 @@ const emptyInput = (): ControllerSnapshot["input"] => ({
   test: false, service: false, lever: 0x8000, rawLever: 0x8000, mappedLever: 512
 });
 
-const capabilities = (mode: boolean): ControllerSnapshot["capabilities"] => ({
-  inputMonitor: true, virtualKeys: false, mode, basicLighting: false, picoLighting: false,
+const capabilities = (writable: boolean, inputMonitor = true): ControllerSnapshot["capabilities"] => ({
+  inputMonitor, virtualKeys: false, mode: writable, basicLighting: false, picoLighting: false,
   hallConfiguration: false, hallCalibration: false, leverConfiguration: false,
-  leverCalibration: false, cardReader: false, bootloader: false
+  leverCalibration: writable, cardReader: false, bootloader: false
 });
 
 const emptySnapshot = (): ControllerSnapshot => ({
@@ -87,8 +88,8 @@ export const isIo4InputDevice = (device: Device): boolean =>
   io4Ids.has(keyOf(device)) && device.usagePage === 0x01 && device.usage === 0x04 && typeof device.path === "string";
 
 const isSimGekiConfigDevice = (device: Device, input: Device): boolean =>
-  input.vendorId === 0x8088 && input.productId === 0x0101 && device.vendorId === input.vendorId &&
-  device.productId === input.productId && device.usagePage === 0xff00 && typeof device.path === "string" &&
+  device.vendorId === input.vendorId && device.productId === input.productId &&
+  device.usagePage === 0xff00 && typeof device.path === "string" &&
   (!input.serialNumber || !device.serialNumber || input.serialNumber === device.serialNumber);
 
 export function parseIo4InputReport(report: Uint8Array): ControllerSnapshot["input"] | null {
@@ -158,7 +159,8 @@ export class SimGekiIo4Controller {
       if (!this.isActive(lifecycle)) return;
       this.scanTimer ??= setInterval(() => {
         if (this.isActive(lifecycle) && (this.snapshotValue.identity.kind === "Unknown"
-          || (this.snapshotValue.identity.kind === "SimGEKI" && !this.configDevice))) {
+          || ((this.snapshotValue.identity.kind === "SimGEKI"
+            || this.snapshotValue.identity.kind === "IO4Compatible") && !this.configDevice))) {
           void this.scan(lifecycle).catch(error => {
             if (this.isActive(lifecycle)) this.reportScanError(error);
           });
@@ -211,7 +213,27 @@ export class SimGekiIo4Controller {
   async hallQuery(): Promise<ControllerCommandResult> { return this.unsupported(); }
   async deviceQuery(): Promise<ControllerCommandResult> { return this.unsupported(); }
   async setLever(_request: LeverRequest): Promise<ControllerCommandResult> { return this.unsupported(); }
-  async leverCalibration(_action: string): Promise<ControllerCommandResult> { return this.unsupported(); }
+  async leverCalibration(action: string): Promise<ControllerCommandResult> {
+    if (action !== "center") return this.result("Rejected", "SimGEKI 仅支持摇杆中心校准。");
+    if (!this.configDevice || !this.snapshotValue.capabilities.leverCalibration)
+      return this.result("Rejected", "当前 IO4 控制器没有可用的 SimGEKI 配置通道。");
+    const generation = this.generation;
+    const device = this.configDevice;
+    const connected = () => this.running && this.generation === generation && this.configDevice === device;
+    try {
+      const calibrationResponse = await this.configCommand(commands.rollerSetOffset);
+      if (!connected()) return this.result("Failed", "摇杆校准期间设备已断开。");
+      if (calibrationResponse.length < 3 || calibrationResponse[2] !== 0x01)
+        return this.result("Failed", "SimGEKI 拒绝了摇杆校准。");
+      const saveResponse = await this.configCommand(commands.save);
+      if (!connected()) return this.result("Failed", "摇杆校准保存期间设备已断开。");
+      if (saveResponse.length < 3 || saveResponse[2] !== 0x01)
+        return this.result("Failed", "SimGEKI 摇杆已校准，但保存失败。");
+      return this.result("Verified", "SimGEKI 摇杆中心已校准并保存。");
+    } catch (error) {
+      return this.result("Failed", error instanceof Error ? error.message : "SimGEKI 摇杆校准失败。");
+    }
+  }
   async bootloader(): Promise<ControllerCommandResult> { return this.unsupported(); }
   async setMode(keyboardMouse: boolean): Promise<ControllerCommandResult> { return this.setInputMode(keyboardMouse ? 3 : 1); }
 
@@ -282,11 +304,9 @@ export class SimGekiIo4Controller {
     }
     this.inputDevice = device;
     this.inputPath = input.path;
-    const simgeki = input.vendorId === 0x8088 && input.productId === 0x0101;
     this.publish({
       ...emptySnapshot(), state: "ConnectedWaitingForData",
-      identity: { kind: simgeki ? "SimGEKI" : "IO4Compatible",
-        displayName: simgeki ? "SimGEKI" : "IO4 兼容控制器",
+      identity: { kind: "IO4Compatible", displayName: "IO4 兼容控制器",
         vendorId: input.vendorId, productId: input.productId, firmware: "—",
         hardwareVersion: Number(input.release) || 0, protocolVersion: 1 },
       deviceConfig: { ...emptySnapshot().deviceConfig, valid: true }
@@ -333,7 +353,9 @@ export class SimGekiIo4Controller {
   }
 
   private disableConfig(): void {
-    this.publish({ ...this.snapshotValue, capabilities: capabilities(false), canWrite: false, inputModes: undefined,
+    this.publish({ ...this.snapshotValue,
+      capabilities: capabilities(false, this.snapshotValue.deviceConfig.inputMode === 1),
+      canWrite: false, inputModes: undefined,
       deviceConfig: { ...this.snapshotValue.deviceConfig, valid: false } });
   }
 
@@ -353,7 +375,13 @@ export class SimGekiIo4Controller {
   }
 
   private setInputModeState(mode: number, writable: boolean): void {
-    this.publish({ ...this.snapshotValue, capabilities: capabilities(writable), canWrite: writable,
+    const inputReady = mode === 1 && this.snapshotValue.capabilities.inputMonitor &&
+      this.snapshotValue.readbackComplete;
+    this.publish({ ...this.snapshotValue,
+      state: mode === 1 && !inputReady ? "ConnectedWaitingForData" : "Ready",
+      identity: { ...this.snapshotValue.identity, kind: "SimGEKI" },
+      capabilities: capabilities(writable, mode === 1), canWrite: writable,
+      readbackComplete: mode !== 1 || inputReady,
       inputModes: { current: String(mode), options: inputModes.map(option => ({ ...option })) },
       deviceConfig: { ...this.snapshotValue.deviceConfig, valid: true, inputMode: mode,
         isKmMode: mode === 3, protocolSupported: true },
@@ -375,7 +403,7 @@ export class SimGekiIo4Controller {
         this.configPending = undefined;
         reject(new Error("SimGEKI 配置通信超时。"));
       }, 1000);
-      this.configPending = { resolve, reject, timer };
+      this.configPending = { command, resolve, reject, timer };
     });
     try {
       // Attach handlers to both promises before a write, timeout or device error can reject either one.
@@ -395,6 +423,7 @@ export class SimGekiIo4Controller {
     if (this.generation !== generation || !this.configPending) return;
     if (data[0] !== configReportId) return;
     const payload = data[0] === configReportId ? data.subarray(1) : data;
+    if (payload[1] !== this.configPending.command) return;
     const pending = this.configPending;
     this.configPending = undefined;
     clearTimeout(pending.timer);

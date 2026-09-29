@@ -877,7 +877,7 @@ function MagneticPanelV2({ snapshot, command }: { snapshot: ControllerSnapshot; 
   </div>;
 }
 
-type LeverCalibrationStage = "idle" | "await-left" | "capturing" | "capturing-left" | "await-right" | "capturing-right" | "verifying";
+type LeverCalibrationStage = "idle" | "await-left" | "capturing" | "capturing-left" | "await-right" | "capturing-right" | "verifying" | "saving";
 
 function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardInputOnly = false }: { snapshot: ControllerSnapshot; command: ControllerCommandInvoker; disabled?: boolean; keyboardInputOnly?: boolean }): ReactElement {
   const [draft, setDraft] = useState<LeverRequest>(() => ({ calibrationMin: snapshot.lever.calibrationMin, calibrationMax: snapshot.lever.calibrationMax, inverted: snapshot.lever.inverted, sensitivity: snapshot.lever.sensitivity, save: true }));
@@ -1126,6 +1126,16 @@ function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardI
   const onLeverCalibration = () => {
     const calibrationCommandAvailable = leverCalibrationAvailable || snapshot.state === "CalibratingLever";
     if (!calibrationCommandAvailable) return;
+    if (snapshot.identity.kind === "SimGEKI") {
+      setLeverCalibrationStage("saving");
+      setLeverCalibrationMessage("请保持摇杆居中，正在校准并保存。");
+      void command(() => window.ogk.controllerLeverCalibration("center")).then(result => {
+        setLeverCalibrationStage("idle");
+        setLeverCalibrationMessage(result?.status === "Accepted" || result?.status === "Verified"
+          ? result.message : result?.message ?? "摇杆校准失败，请重试。");
+      });
+      return;
+    }
     if (snapshot.identity.kind === "Leonardo") {
       if (leverCalibrationStage === "idle") {
         setLeverCalibrationStage("capturing");
@@ -1168,7 +1178,7 @@ function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardI
   if (inputOnly) return <div className="controller-accordions"><section className="controller-accordion input-only-accordion"><div className="accordion-heading"><h3>设备功能</h3><span>ⓘ</span></div><div className="joystick-unavailable">当前控制器未提供灯光、磁轴或摇杆设置。可用的输入状态会显示在上方。</div></section></div>;
   return <div className={`controller-accordions ${disabled ? "is-keyboard-disabled" : ""}`} aria-disabled={disabled || undefined}>
     <fieldset className="controller-configuration-fieldset" disabled={disabled}>
-    <section className="controller-accordion lighting-accordion">
+    {(snapshot.capabilities.basicLighting || snapshot.capabilities.picoLighting) && <section className="controller-accordion lighting-accordion">
        <div className="accordion-heading"><h3>灯光控制</h3><span>ⓘ</span></div>
       <div className={`lighting-brightness-card ${showPicoColors ? "has-color-modes" : "is-single-control"}`}>
         <div className="lighting-brightness"><span>亮度 <b>{deviceConfigFresh ? `${brightnessPercent}%` : "—"}</b></span><i style={sliderPositionStyle(brightnessPercent)}><em style={{ width: `${brightnessPercent}%` }} /><input type="range" min="0" max="255" value={deviceConfigFresh ? lighting.brightness : 0} aria-label="灯光亮度" disabled={!brightnessWritable || !deviceConfigFresh} onChange={event => queueBrightness(Number(event.currentTarget.value))} /></i></div>
@@ -1189,14 +1199,14 @@ function ControllerAccordionsV2({ snapshot, command, disabled = false, keyboardI
           <div className="rgb-lines">{(["R", "G", "B"] as const).map((channel, index) => { const color = [lighting.groundR, lighting.groundG, lighting.groundB]; const position = (color[index] / 255) * 100; return <div key={channel}><span>{channel}</span><i style={sliderPositionStyle(position)} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); legacyColorFromPointer(index, event); }} onPointerMove={event => { if (event.buttons > 0) legacyColorFromPointer(index, event); }}><em style={{ width: `${position}%` }} /><input type="range" min="0" max="255" value={color[index]} aria-label={`按键灯 ${channel}`} disabled={!legacyColorWritable} onChange={event => updateLegacyColor(index, Number(event.currentTarget.value))} /></i><b>{color[index]}</b></div>; })}</div>
         </div> : <div className="lighting-mode-unavailable">MU3IO下仅支持亮度控制</div>}
       </div>
-    </section>
+    </section>}
     <section className={`controller-accordion joystick-accordion ${snapshot.state === "SyncingDevice" || snapshot.state === "SyncingHall" ? "is-config-syncing" : ""}`}>
       <div className="accordion-heading"><h3>摇杆设置</h3><span>ⓘ</span></div>
       {!deviceConfigFresh ? <div className="joystick-unavailable">正在等待 Device Config 回读，完成后显示摇杆配置。</div> : leverAvailable ? <div className="joystick-controls">
-        <div className="joystick-actions"><button type="button" className="selected-control" disabled={(!leverCalibrationAvailable && snapshot.state !== "CalibratingLever") || leverCalibrationStage === "capturing-left" || leverCalibrationStage === "capturing-right" || leverCalibrationStage === "verifying"} onClick={onLeverCalibration}>{leverCalibrationStage === "idle" ? "校准" : snapshot.identity.kind === "Leonardo" && leverCalibrationStage === "capturing" ? "校准完成" : leverCalibrationStage === "await-left" ? "记录左端" : leverCalibrationStage === "await-right" ? "记录右端" : leverCalibrationStage === "verifying" ? "验证中" : "采样中"}</button><button type="button" className={draft.inverted ? "selected-control" : ""} disabled={!leverSettingsUiWritable || leverCalibrationStage !== "idle"} aria-pressed={draft.inverted} onClick={onInvert}>反转</button></div>
-        <label className="sensitivity-field"><span>灵敏度 <b>{sensitivityValue === 0 ? "默认" : "当前"}</b></span><input type="range" min="0" max="10" value={sensitivityValue} aria-label="摇杆灵敏度" disabled={!leverSettingsUiWritable || leverCalibrationStage !== "idle"} onChange={event => onSensitivityChange(Number(event.currentTarget.value))} /><div className="sensitivity-scale" aria-hidden="true" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); sensitivityFromPointer(event); }} onPointerMove={event => { if (event.buttons > 0) sensitivityFromPointer(event); }}><i className="sensitivity-track" style={sliderPositionStyle(sensitivityValue * 10)} />{Array.from({ length: 11 }, (_, index) => <i key={index} className={index === sensitivityValue ? "tick active" : "tick"} />)}<small><span>默认</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span></small></div></label>
+        <div className="joystick-actions"><button type="button" className="selected-control" disabled={(!leverCalibrationAvailable && snapshot.state !== "CalibratingLever") || leverCalibrationStage === "capturing-left" || leverCalibrationStage === "capturing-right" || leverCalibrationStage === "verifying" || leverCalibrationStage === "saving"} onClick={onLeverCalibration}>{leverCalibrationStage === "idle" ? snapshot.identity.kind === "SimGEKI" ? "校准中心" : "校准" : leverCalibrationStage === "saving" ? "保存中" : snapshot.identity.kind === "Leonardo" && leverCalibrationStage === "capturing" ? "校准完成" : leverCalibrationStage === "await-left" ? "记录左端" : leverCalibrationStage === "await-right" ? "记录右端" : leverCalibrationStage === "verifying" ? "验证中" : "采样中"}</button>{snapshot.capabilities.leverConfiguration && <button type="button" className={draft.inverted ? "selected-control" : ""} disabled={!leverSettingsUiWritable || leverCalibrationStage !== "idle"} aria-pressed={draft.inverted} onClick={onInvert}>反转</button>}</div>
+        {snapshot.capabilities.leverConfiguration && <label className="sensitivity-field"><span>灵敏度 <b>{sensitivityValue === 0 ? "默认" : "当前"}</b></span><input type="range" min="0" max="10" value={sensitivityValue} aria-label="摇杆灵敏度" disabled={!leverSettingsUiWritable || leverCalibrationStage !== "idle"} onChange={event => onSensitivityChange(Number(event.currentTarget.value))} /><div className="sensitivity-scale" aria-hidden="true" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); sensitivityFromPointer(event); }} onPointerMove={event => { if (event.buttons > 0) sensitivityFromPointer(event); }}><i className="sensitivity-track" style={sliderPositionStyle(sensitivityValue * 10)} />{Array.from({ length: 11 }, (_, index) => <i key={index} className={index === sensitivityValue ? "tick active" : "tick"} />)}<small><span>默认</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span></small></div></label>}
       </div> : <div className="joystick-unavailable">当前控制器不支持摇杆高级配置。</div>}
-      {(leverCalibrationStage !== "idle" || leverCalibrationMessage !== "点击校准后，将摇杆左右推到最大行程。") && <p className="joystick-calibration-status" role="status">{leverCalibrationMessage}</p>}
+      {(snapshot.identity.kind === "SimGEKI" || leverCalibrationStage !== "idle" || leverCalibrationMessage !== "点击校准后，将摇杆左右推到最大行程。") && <p className="joystick-calibration-status" role="status">{snapshot.identity.kind === "SimGEKI" && leverCalibrationStage === "idle" && leverCalibrationMessage === "点击校准后，将摇杆左右推到最大行程。" ? "将摇杆置于中心，然后点击“校准中心”。" : leverCalibrationMessage}</p>}
     </section>
     </fieldset>
   </div>;

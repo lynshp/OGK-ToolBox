@@ -21,6 +21,8 @@ test('recognizes only known IO4 gamepad collections', () => {
   const { isIo4InputDevice } = load();
   const base = { vendorId: 0x0ca3, productId: 0x0021, path: 'io4', release: 1, interface: 0 };
   assert.equal(isIo4InputDevice({ ...base, usagePage: 0x01, usage: 0x04 }), true);
+  assert.equal(isIo4InputDevice({ ...base, vendorId: 0x8088, productId: 0x0101,
+    usagePage: 0x01, usage: 0x04 }), true);
   assert.equal(isIo4InputDevice({ ...base, usagePage: 0xff00, usage: 0x01 }), false);
   assert.equal(isIo4InputDevice({ ...base, vendorId: 0x1234, usagePage: 0x01, usage: 0x04 }), false);
 });
@@ -70,8 +72,8 @@ test('never exposes an IO4 endpoint descriptor while resolving the USB product n
   assert.equal(controller.getSnapshot().identity.displayName, 'SimGEKI街机风格控制器');
 });
 
-test('reads SimGEKI input and verifies all three configuration modes', async t => {
-  const inputDescriptor = { vendorId: 0x8088, productId: 0x0101, path: 'input', serialNumber: 'simgeki',
+test('identifies an IO4-compatible device as SimGEKI after configuration readback', async t => {
+  const inputDescriptor = { vendorId: 0x0ca3, productId: 0x0021, path: 'input', serialNumber: 'simgeki',
     product: 'SimGEKI', release: 2, interface: 0, usagePage: 0x01, usage: 0x04 };
   const configDescriptor = { ...inputDescriptor, path: 'config', interface: 1, usagePage: 0xff00, usage: 1 };
   let mode = 1;
@@ -79,13 +81,22 @@ test('reads SimGEKI input and verifies all three configuration modes', async t =
   inputDevice.close = async () => {};
   const configDevice = new EventEmitter();
   configDevice.close = async () => {};
+  const commands = [];
   configDevice.write = async report => {
     const command = report[2];
+    commands.push(command);
     if (command === 0x02) mode = report[4];
     const response = Buffer.alloc(64);
     response[0] = 0xaa;
+    response[2] = command;
     response[3] = 0x01;
     if (command === 0x01) response[4] = mode;
+    if (command === 0x01 && commands.length > 1) {
+      const staleSaveResponse = Buffer.from(response);
+      staleSaveResponse[2] = 0x81;
+      staleSaveResponse[4] = 0;
+      queueMicrotask(() => configDevice.emit('data', staleSaveResponse));
+    }
     queueMicrotask(() => configDevice.emit('data', response));
     return report.length;
   };
@@ -100,6 +111,7 @@ test('reads SimGEKI input and verifies all three configuration modes', async t =
   assert.equal(controller.getSnapshot().identity.kind, 'SimGEKI');
   assert.equal(controller.getSnapshot().identity.displayName, 'SimGEKI街机风格控制器');
   assert.equal(controller.getSnapshot().capabilities.mode, true);
+  assert.equal(controller.getSnapshot().capabilities.leverCalibration, true);
   assert.equal(controller.getSnapshot().inputModes.current, '1');
   assert.equal(controller.getSnapshot().inputModes.options.map(mode => mode.id).join(','), '1,2,3');
   assert.equal(controller.getSnapshot().state, 'ConnectedWaitingForData');
@@ -117,10 +129,14 @@ test('reads SimGEKI input and verifies all three configuration modes', async t =
 
   const result = await controller.setInputMode(2);
   assert.equal(result.status, 'Verified');
+  assert.deepEqual(commands, [0x01, 0x02, 0x81, 0x01]);
   assert.equal(controller.getSnapshot().deviceConfig.inputMode, 2);
   assert.equal(controller.getSnapshot().inputModes.current, '2');
   assert.equal(controller.getSnapshot().deviceConfig.isKmMode, false);
   assert.equal((await controller.setInputMode(4)).status, 'Rejected');
+  assert.equal((await controller.leverCalibration('left')).status, 'Rejected');
+  assert.equal((await controller.leverCalibration('center')).status, 'Verified');
+  assert.deepEqual(commands, [0x01, 0x02, 0x81, 0x01, 0xa0, 0x81]);
 });
 
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -135,8 +151,8 @@ function hidDevice() {
   device.close = async () => { device.closed++; device.removeAllListeners(); };
   return device;
 }
-function fixture(configure = () => {}) {
-  const input = { vendorId: 0x8088, productId: 0x0101, path: 'input', serialNumber: 'simgeki',
+function fixture(configure = () => {}, resolveName = async () => undefined) {
+  const input = { vendorId: 0x0ca3, productId: 0x0021, path: 'input', serialNumber: 'simgeki',
     release: 1, interface: 0, usagePage: 0x01, usage: 0x04 };
   const config = { ...input, path: 'config', usagePage: 0xff00, usage: 1, interface: 1 };
   const inputDevice = hidDevice(), configs = [];
@@ -147,7 +163,7 @@ function fixture(configure = () => {}) {
     const respond = report => {
       if (report[2] === 0x02) mode = report[4];
       const response = Buffer.alloc(64);
-      response[0] = 0xaa; response[3] = 1; response[4] = mode;
+      response[0] = 0xaa; response[2] = report[2]; response[3] = 1; response[4] = mode;
       queueMicrotask(() => device.emit('data', response));
       return report.length;
     };
@@ -157,8 +173,76 @@ function fixture(configure = () => {}) {
     return device;
   } } };
   const { SimGekiIo4Controller } = load();
-  const controller = new SimGekiIo4Controller(async () => hid, async () => undefined);
+  const controller = new SimGekiIo4Controller(async () => hid, resolveName);
   return { controller, input, config, hid, inputDevice, configs, get inputOpens() { return inputOpens; } };
+}
+
+for (const [label, resolveName, expectedName] of [
+  ['SimGEKI', async () => 'SimGEKI街机风格控制器', 'SimGEKI街机风格控制器'],
+  ['MYGEKI', async () => 'MYGEKI', 'MYGEKI'],
+  ['missing name', async () => undefined, 'IO4 兼容控制器'],
+  ['failed name lookup', async () => { throw new Error('USB description unavailable'); }, 'IO4 兼容控制器']
+]) {
+  for (const [vendorId, productId] of [[0x0ca3, 0x0021], [0x8088, 0x0101]]) {
+    test(`${label} keeps its firmware name or IO4 fallback independently of mode support (${vendorId.toString(16)})`, async t => {
+      const f = fixture(undefined, resolveName);
+      Object.assign(f.input, { vendorId, productId });
+      Object.assign(f.config, { vendorId, productId });
+      t.after(() => f.controller.stop());
+      await f.controller.start();
+      assert.equal(f.controller.getSnapshot().identity.kind, 'SimGEKI');
+      assert.equal(f.controller.getSnapshot().identity.displayName, expectedName);
+      assert.equal((await f.controller.setInputMode(3)).status, 'Verified');
+      assert.equal(f.controller.getSnapshot().identity.displayName, expectedName);
+      assert.equal(f.controller.getSnapshot().inputModes.current, '3');
+    });
+  }
+}
+
+test('invalid configuration replies leave IO4 input working without exposing mode or calibration writes', async t => {
+  const f = fixture(device => {
+    device.write = async report => {
+      const response = Buffer.from([0xaa, 0, report[2], 1, 9]);
+      queueMicrotask(() => device.emit('data', response));
+      return report.length;
+    };
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().identity.kind, 'IO4Compatible');
+  assert.equal(f.controller.getSnapshot().capabilities.mode, false);
+  assert.equal(f.controller.getSnapshot().capabilities.leverCalibration, false);
+  const report = Buffer.alloc(64); report[0] = 1; report[1] = 0x23; report[2] = 0x45;
+  f.inputDevice.emit('data', report);
+  assert.equal(f.controller.getSnapshot().input.rawLever, 0x4523);
+  assert.equal(f.controller.getSnapshot().state, 'Ready');
+  assert.equal((await f.controller.setInputMode(2)).status, 'Rejected');
+  assert.equal((await f.controller.leverCalibration('center')).status, 'Rejected');
+});
+
+test('a configuration interface with another serial number is not used for the selected input device', async t => {
+  const f = fixture();
+  f.config.serialNumber = 'different-device';
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.configs.length, 0);
+  assert.equal(f.controller.getSnapshot().canWrite, false);
+});
+
+for (const stage of [0xa0, 0x81]) {
+  test(`center calibration cannot report success after its configuration connection fails at ${stage.toString(16)}`, async t => {
+    const f = fixture((device, respond) => {
+      device.write = async report => {
+        const length = respond(report);
+        if (report[2] === stage) device.emit('error', new Error('configuration disconnected'));
+        return length;
+      };
+    });
+    t.after(() => f.controller.stop());
+    await f.controller.start();
+    assert.equal((await f.controller.leverCalibration('center')).status, 'Failed');
+    assert.equal(f.controller.getSnapshot().canWrite, false);
+  });
 }
 
 test('write rejection is handled, closes its channel and permits a fresh handshake', async t => {
@@ -205,6 +289,23 @@ test('an initial configuration timeout can be retried without reopening physical
   assert.equal(f.inputOpens, 1);
   assert.equal(f.controller.getSnapshot().inputModes.current, '1');
   assert.equal(f.controller.getSnapshot().canWrite, true);
+});
+
+test('a SimGEKI in DLL mode is ready without an IO4 input frame', async t => {
+  const f = fixture((device, respond) => {
+    device.write = async report => {
+      if (report[2] !== 0x01) return respond(report);
+      const response = Buffer.alloc(64);
+      response[0] = 0xaa; response[2] = 0x01; response[3] = 1; response[4] = 2;
+      queueMicrotask(() => device.emit('data', response));
+      return report.length;
+    };
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().state, 'Ready');
+  assert.equal(f.controller.getSnapshot().readbackComplete, true);
+  assert.equal(f.controller.getSnapshot().capabilities.inputMonitor, false);
 });
 
 test('a configuration error closes the old handle and retry-sync restores the channel', async t => {
@@ -296,15 +397,13 @@ test('stop during mode readback cannot republish writable state', async () => {
   assert.equal(f.configs[0].closed, 1);
 });
 
-test('a generic IO4 collection never exposes mode writes or opens a vendor configuration channel', async t => {
+test('an IO4-compatible device without a configuration collection stays read-only', async t => {
   const f = fixture();
   t.after(() => f.controller.stop());
-  f.hid.devicesAsync = async () => [
-    { ...f.input, vendorId: 0x0ca3, productId: 0x0021 },
-    { ...f.config, vendorId: 0x0ca3, productId: 0x0021 }
-  ];
+  f.hid.devicesAsync = async () => [f.input];
   await f.controller.start();
   assert.equal(f.configs.length, 0);
+  assert.equal(f.controller.getSnapshot().identity.kind, 'IO4Compatible');
   assert.equal(f.controller.getSnapshot().canWrite, false);
   assert.equal(f.controller.getSnapshot().inputModes, undefined);
   assert.equal((await f.controller.setInputMode(2)).status, 'Rejected');
@@ -320,7 +419,7 @@ for (const channel of ['input', 'config']) {
           if (index > 0) {
             replacementWrites.push(report[2]);
             const response = Buffer.alloc(64);
-            response[0] = 0xaa; response[3] = 1; response[4] = 1;
+            response[0] = 0xaa; response[2] = report[2]; response[3] = 1; response[4] = 1;
             queueMicrotask(() => device.emit('data', response));
             return report.length;
           }

@@ -20,6 +20,9 @@ export function createIo4Adapter(controller = new SimGekiIo4Controller()): Contr
         case "mode":
           if (typeof body.keyboardMouse === "boolean") return controller.setMode(body.keyboardMouse);
           return { status: "Rejected", message: "keyboardMouse 必须是布尔值。" };
+        case "lever-calibration":
+          if (body.action === "center") return controller.leverCalibration(body.action);
+          return { status: "Rejected", message: "SimGEKI 仅支持摇杆中心校准。" };
         default: return { status: "Rejected", message: "当前 IO4 控制器不支持该命令。" };
       }
     },

@@ -38,6 +38,7 @@ function controller() {
     retrySync: async () => { calls.push('retry-sync'); return result(); },
     setInputMode: async mode => { current = String(mode); calls.push(['input-mode', mode]); return result(); },
     setMode: async mode => { calls.push(['mode', mode]); return result(); },
+    leverCalibration: async action => { calls.push(['lever-calibration', action]); return result(); },
     releaseAllIfRunning: async () => { calls.push('release-all'); }
   };
 }
@@ -49,12 +50,15 @@ test('adapter validates modes, routes supported commands and rejects unknown har
   assert.equal(adapter.snapshot().inputModes.current, '2');
   assert.equal((await adapter.command('mode', { keyboardMouse: 'true' })).status, 'Rejected');
   await adapter.command('mode', { keyboardMouse: true });
+  assert.equal((await adapter.command('lever-calibration', { action: 'left' })).status, 'Rejected');
+  assert.equal((await adapter.command('lever-calibration', { action: 'center' })).status, 'Verified');
   await adapter.command('rescan', {});
   await adapter.command('retry-sync', {});
   assert.equal((await adapter.command('brightness', { brightness: 255 })).status, 'Rejected');
   await adapter.releaseAll(); await adapter.close();
   assert.equal(reader.stopped, 1);
-  assert.deepEqual(reader.calls, [['input-mode', 2], ['mode', true], 'rescan', 'retry-sync', 'release-all']);
+  assert.deepEqual(reader.calls, [['input-mode', 2], ['mode', true], ['lever-calibration', 'center'],
+    'rescan', 'retry-sync', 'release-all']);
 });
 
 test('provider entry starts the adapter and serves SDK mode commands without real hardware', { timeout: 5000 }, async t => {
