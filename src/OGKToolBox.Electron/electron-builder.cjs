@@ -33,8 +33,9 @@ const config = {
     "!**/github-update-token"
   ],
   extraResources: [
+    { from: "resources/player-capture", to: "player-capture" },
     { from: "../OGKToolBox.Api/bin/Release/net8.0/publish", to: "api" },
-    { from: "resources/controller", to: "controller" },
+    { from: "resources/controller", to: "controller", filter: ["OGKToolBox.ControllerHost.exe", "module.json", "artifact.json", "LICENSE.txt", "README.md"] },
     { from: "assets/chart", to: "chart" },
     { from: "assets/fastgithub", to: "fastgithub" },
     { from: "resources/NYAGEKI_IO.dll", to: "NYAGEKI_IO.dll" },

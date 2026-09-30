@@ -8,6 +8,18 @@ const subscribeToController = () => {
 };
 
 contextBridge.exposeInMainWorld("ogk", {
+  playerSaves: (root: string) => ipcRenderer.invoke("player-saves:list", root),
+  playerDefaultAccessCode: (root: string) => ipcRenderer.invoke("player-saves:default-card", root),
+  fetchConfiguredPlayerSave: (root: string, cardId: string, serverId: string) => ipcRenderer.invoke("player-saves:fetch-configured", root, cardId, serverId),
+  addPlayerCard: (root: string, code: string) => ipcRenderer.invoke("player-saves:add-card", root, code),
+  reorderPlayerCards: (root: string, ids: string[]) => ipcRenderer.invoke("player-saves:reorder-cards", root, ids),
+  deletePlayerSaves: (root: string, ids: string[], scope: { cardId?: string; serverId: string } | null) => ipcRenderer.invoke("player-saves:delete", root, ids, scope),
+  bindPlayerSave: (root: string, saveId: string, cardId: string, serverId: string) => ipcRenderer.invoke("player-saves:bind", root, saveId, cardId, serverId),
+  importPlayerSave: (root: string, serverId: string | null) => ipcRenderer.invoke("player-saves:import", root, serverId),
+  setPlayerCapture: (root: string, enabled: boolean) => ipcRenderer.invoke("player-saves:capture", root, enabled),
+  refreshPlayerSave: (root: string, saveId: string, cardId: string, serverId: string) => ipcRenderer.invoke("player-saves:refresh", root, saveId, cardId, serverId),
+  cancelPlayerRefresh: () => ipcRenderer.send("player-saves:cancel"),
+  exportPlayerSave: (root: string, id: string) => ipcRenderer.invoke("player-saves:export", root, id),
   chooseGameDirectory: () => ipcRenderer.invoke("dialog:game-directory"),
   prepareGameLauncher: (root: string, options?: unknown) => ipcRenderer.invoke("game:prepare-launcher", root, options),
   launchGame: (root: string, options?: unknown) => ipcRenderer.invoke("game:launch", root, options),

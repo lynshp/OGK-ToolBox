@@ -1,7 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 /** Portalled menus follow every scrolling ancestor, including nested config lists. */
-export function useAnchoredMenu(host: RefObject<HTMLDivElement | null>, open: boolean, close: () => void) {
+export function useAnchoredMenu(host: RefObject<HTMLElement | null>, open: boolean, close: () => void, options: { width?: number; maxHeight?: number; align?: "start" | "end"; gap?: number } = {}) {
+  const { width: preferredWidth, maxHeight: heightLimit = 300, align = "start", gap = 6 } = options;
   const onClose = useRef(close);
   onClose.current = close;
   const [menu, setMenu] = useState({ top: 0, left: 0, width: 0, maxHeight: 300 });
@@ -9,16 +10,16 @@ export function useAnchoredMenu(host: RefObject<HTMLDivElement | null>, open: bo
     const anchor = host.current;
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
-    const gap = 6;
+    const width = Math.min(preferredWidth ?? rect.width, window.innerWidth - 16);
     const below = window.innerHeight - rect.bottom - gap - 8;
     const above = rect.top - gap - 8;
     const upward = below < 180 && above > below;
-    const maxHeight = Math.max(0, Math.min(300, upward ? above : below));
+    const maxHeight = Math.max(0, Math.min(heightLimit, upward ? above : below));
     setMenu({ top: upward ? rect.top - gap : rect.bottom + gap,
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - rect.width - 8)),
-      width: rect.width, maxHeight });
+      left: Math.max(8, Math.min(align === "end" ? rect.right - width : rect.left, window.innerWidth - width - 8)),
+      width, maxHeight });
     anchor.dataset.menuPlacement = upward ? "top" : "bottom";
-  }, [host]);
+  }, [host, preferredWidth, heightLimit, align, gap]);
 
   useLayoutEffect(() => {
     if (!open) return;

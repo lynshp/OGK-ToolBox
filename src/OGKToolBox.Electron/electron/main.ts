@@ -1,3 +1,4 @@
+import { importManagedPlayerSave, deleteManagedPlayerSaves, playerProfiles, scopedPlayerSaves, addPlayerCard, reorderPlayerCards, bindPlayerSave, refreshManagedPlayerSave, fetchManagedPlayerSave } from "./player-profiles";
 import { app, BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -12,6 +13,10 @@ import { createControllerBackends } from "./controller-registry";
 import { githubSources } from "./github-sources";
 import { ensurePackageDataConfig, packageExtractRoot } from "./package-extractor";
 import { UpdateManager } from "./update-manager";
+import { readSave, saveDirectory } from "./player-save";
+import { captureState, syncCaptures, setCapture } from "./player-capture";
+import { playerConnectionDefaults } from "./player-bootstrap";
+import { playerRatingCatalog } from "./player-rating-catalog";
 
 type Installation = { installationId: string; displayName: string; gameRoot: string };
 type Page<T> = { items: T[]; total: number; offset: number; limit: number };
@@ -972,12 +977,16 @@ async function librarySection(root: string, kind: string, signal?: AbortSignal) 
     throw new Error("不支持的资源库分区。");
   const registered = await installation(root);
   const items = await queryAll<any>(registered.installationId, kind, signal);
-  if (kind === "music") return items.map(item => ({
+  if (kind === "music") {
+    const rating = await playerRatingCatalog(root, items, signal);
+    return items.map(item => ({
       ...item, id: item.numericId, origin: { packageId: item.packageId },
       jacket: item.hasJacket ? { bundlePath: resourceToken({ type: "music", id: item.id }) } : undefined,
       audio: item.hasAudio ? resourceToken({ type: "music", id: item.id }) : undefined,
+      rating: rating.get(Number(item.numericId)),
       charts: item.charts.map((chart: any) => ({ ...chart, filePath: chart.id }))
     }));
+  }
   if (kind === "cards") return items.map(item => ({
       ...item, id: item.numericId, origin: { packageId: item.packageId },
       image: item.hasImage ? { bundlePath: resourceToken({ type: "card", id: item.id, visual: "card" }) } : undefined,
@@ -1235,6 +1244,54 @@ async function requireGameStopped(): Promise<void> {
   if (running.length) throw new Error(`游戏仍在运行：${running.map(name => `${name}.exe`).join("、")}。`);
 }
 ipcMain.handle("game:running-processes", () => runningGameProcesses());
+const playerRefreshes = new Map<number, AbortController>();
+ipcMain.handle("player-saves:list", async (_event, requestedRoot: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  const capture = await captureState(root);
+  try { await syncCaptures(root); }
+  catch (error) { capture.status = `read-error: ${(error as Error).message}`; }
+  return { saves: await scopedPlayerSaves(root), capture, profiles: await playerProfiles(root) };
+});
+ipcMain.handle("player-saves:import", async (_event, requestedRoot: string, serverId: string | null) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  const choice = await dialog.showOpenDialog({ title: "导入游玩数据 JSON", properties: ["openFile"], filters: [{ name: "JSON 存档", extensions: ["json"] }] });
+  if (choice.canceled || !choice.filePaths[0]) return null;
+  return importManagedPlayerSave(root, await readSave(choice.filePaths[0]), serverId);
+});
+ipcMain.handle("player-saves:capture", async (_event, requestedRoot: string, enabled: boolean) => {
+  if (typeof enabled !== "boolean") throw new Error("采集设置无效。");
+  if (enabled && (await runningGameProcesses()).length) throw new Error("请先退出游戏，再安装或更新采集模块。");
+  const root = await resolveGameDirectory(requestedRoot);
+  const plugin = app.isPackaged ? path.join(process.resourcesPath, "player-capture", "OGKToolBox.PlayerCapture.dll") : path.resolve(__dirname, "../../resources/player-capture/OGKToolBox.PlayerCapture.dll");
+  return setCapture(root, enabled, plugin);
+});
+async function withPlayerRefresh<T>(event: Electron.IpcMainInvokeEvent, requestedRoot: string, action: (root: string, signal: AbortSignal) => Promise<T>) {
+  if ((await runningGameProcesses()).length) throw new Error("请先退出游戏再使用游戏外刷新，或等待随游戏自动采集。");
+  if (playerRefreshes.has(event.sender.id)) throw new Error("正在刷新存档。");
+  const root = await resolveGameDirectory(requestedRoot), abort = new AbortController();
+  const senderId = event.sender.id;
+  playerRefreshes.set(senderId, abort);
+  const cancel = () => abort.abort(); event.sender.once("destroyed", cancel);
+  const deadline = setTimeout(cancel, 180000);
+  try { return await action(root, abort.signal); }
+  finally { clearTimeout(deadline); event.sender.removeListener("destroyed", cancel); playerRefreshes.delete(senderId); }
+}
+ipcMain.handle("player-saves:default-card", async (_event, requestedRoot: string) => (await playerConnectionDefaults(await resolveGameDirectory(requestedRoot))).accessCode);
+ipcMain.handle("player-saves:fetch-configured", (event, requestedRoot: string, cardId: string, serverId: string) => withPlayerRefresh(event, requestedRoot, (root, signal) => fetchManagedPlayerSave(root, cardId, serverId, signal)));
+ipcMain.handle("player-saves:add-card", async (_event, requestedRoot: string, code: string) => addPlayerCard(await resolveGameDirectory(requestedRoot), code));
+ipcMain.handle("player-saves:reorder-cards", async (_event, requestedRoot: string, ids: string[]) => reorderPlayerCards(await resolveGameDirectory(requestedRoot), ids));
+ipcMain.handle("player-saves:bind", async (_event, requestedRoot: string, saveId: string, cardId: string, serverId: string) => bindPlayerSave(await resolveGameDirectory(requestedRoot), saveId, cardId, serverId));
+ipcMain.handle("player-saves:refresh", (event, requestedRoot: string, saveId: string, cardId: string, serverId: string) => withPlayerRefresh(event, requestedRoot, (root, signal) => refreshManagedPlayerSave(root, saveId, cardId, serverId, signal)));
+ipcMain.handle("player-saves:delete", async (_event, requestedRoot: string, ids: string[], scope: { serverId: string; cardId?: string } | null) => deleteManagedPlayerSaves(await resolveGameDirectory(requestedRoot), ids, scope));
+ipcMain.on("player-saves:cancel", event => playerRefreshes.get(event.sender.id)?.abort());
+ipcMain.handle("player-saves:export", async (_event, requestedRoot: string, id: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error("存档编号无效。");
+  const data = await readSave(path.join(saveDirectory(root), "archives", `${id}.json`)) as { raw: unknown };
+  const choice = await dialog.showSaveDialog({ title: "导出游玩数据", defaultPath: "ongeki-player-save.json", filters: [{ name: "JSON 存档", extensions: ["json"] }] });
+  if (choice.canceled || !choice.filePath) return false;
+  await fs.writeFile(choice.filePath, JSON.stringify(data.raw, null, 2), "utf8"); return true;
+});
 ipcMain.handle("game:stop-processes", async () => {
   const running = await runningGameProcesses();
   await Promise.all(running.map(name => commandOutput("taskkill.exe", ["/F", "/IM", `${name}.exe`])));

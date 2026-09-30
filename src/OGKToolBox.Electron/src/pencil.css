@@ -18,6 +18,9 @@
   font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Yu Gothic UI", sans-serif;
 }
 
+/* Native form controls must use the same UI font as their surrounding text. */
+button, input, select, textarea { font-family: inherit; }
+
 html,
 body,
 #root {

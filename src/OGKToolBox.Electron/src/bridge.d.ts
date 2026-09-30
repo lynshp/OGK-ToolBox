@@ -12,6 +12,18 @@ export type HddSetupInspection = {
 };
 
 export interface OgkBridge {
+  playerSaves(root: string): Promise<import("./player-save-models").PlayerSaveState>;
+  addPlayerCard(root: string, code: string): Promise<string>;
+  reorderPlayerCards(root: string, ids: string[]): Promise<void>;
+  deletePlayerSaves(root: string, ids: string[], scope: { cardId?: string; serverId: string } | null): Promise<void>;
+  bindPlayerSave(root: string, saveId: string, cardId: string, serverId: string): Promise<void>;
+  playerDefaultAccessCode(root: string): Promise<string>;
+  fetchConfiguredPlayerSave(root: string, cardId: string, serverId: string): Promise<import("./player-save-models").PlayerSave>;
+  importPlayerSave(root: string, serverId: string | null): Promise<import("./player-save-models").PlayerSave | null>;
+  setPlayerCapture(root: string, enabled: boolean): Promise<import("./player-save-models").CaptureState>;
+  refreshPlayerSave(root: string, saveId: string, cardId: string, serverId: string): Promise<import("./player-save-models").PlayerSave>;
+  cancelPlayerRefresh(): void;
+  exportPlayerSave(root: string, id: string): Promise<boolean>;
   chooseGameDirectory(): Promise<string | null>;
   prepareGameLauncher(root: string, options?: GameLaunchOptions): Promise<{ fileName: string }>;
   launchGame(root: string, options?: GameLaunchOptions): Promise<{ fileName: string }>;

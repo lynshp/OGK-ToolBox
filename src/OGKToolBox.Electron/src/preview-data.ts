@@ -151,6 +151,18 @@ export function installPreviewBridge(expressionError: boolean): void {
     controllerSnapshot.deviceConfig.cabGameMapping = request.cabGameMapping;
   };
   window.ogk = {
+    playerSaves: async () => ({ saves: [], profiles: { cards: [], defaultCardId: "", configurationError: "" }, capture: { enabled: false, installed: false, status: "", sessions: 0, canRefresh: false } }),
+    addPlayerCard: async () => { throw new Error("预览模式不保存卡号。"); },
+    reorderPlayerCards: async () => {},
+    deletePlayerSaves: async () => {},
+    bindPlayerSave: async () => {},
+    playerDefaultAccessCode: async () => "",
+    fetchConfiguredPlayerSave: async () => { throw new Error("预览模式不连接游戏服务器。"); },
+    importPlayerSave: async () => { throw new Error("请在桌面应用中导入真实 JSON 存档。"); },
+    setPlayerCapture: async () => { throw new Error("请在桌面应用中启用游戏采集。"); },
+    refreshPlayerSave: async () => { throw new Error("预览模式不连接游戏服务器。"); },
+    cancelPlayerRefresh: () => {},
+    exportPlayerSave: async () => false,
   chooseGameDirectory: async () => previewSummary.gameRoot,
   prepareGameLauncher: async () => ({ fileName: "OGKToolBox-Launch.bat" }),
   launchGame: async () => ({ fileName: "preview" }),

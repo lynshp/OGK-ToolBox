@@ -1,14 +1,15 @@
 {
   "moduleId": "ogk-controller",
-  "moduleVersion": "1.1.8",
+  "moduleVersion": "1.1.9",
   "moduleApiVersion": 1,
-  "mu3CoreCommit": "49867ed775e60f6c90a9fb771c525fb1380760aa",
+  "mu3CoreCommit": "c386d939748572109c5f38a2e3f7f2c453996324",
+  "mu3CoreTag": "ogk-controller-v1.1.9",
   "protocolVersion": 1,
   "supportedFirmware": {
     "pico": ">=0.2.22",
     "leonardo": "legacy"
   },
-  "ogkToolBoxVersion": "1.1.8",
+  "ogkToolBoxVersion": "1.1.9",
   "platform": "win-x64",
   "entryPoint": "OGKToolBox.ControllerHost.exe"
 }

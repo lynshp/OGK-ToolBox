@@ -2,7 +2,7 @@
   "moduleId": "example-controller",
   "moduleVersion": "0.1.0",
   "moduleApiVersion": 1,
-  "ogkToolBoxVersion": "1.1.8",
+  "ogkToolBoxVersion": "1.1.9",
   "platform": "win-x64",
   "runtime": "node",
   "entryPoint": "provider.cjs"

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "moduleVersion": "1.1.8",
+  "moduleVersion": "1.1.9",
   "platform": "win-x64",
   "files": {
-    "OGKToolBox.ControllerHost.exe": "0ac0b2704fb793e89df7c05f0beca46565e04e6dc718c3930ec420fc7587eb6f",
-    "module.json": "e8e0df6634e4092f47a37cbe1a7dac5776b473c9b19e10720ad7f03080c9ee46"
+    "OGKToolBox.ControllerHost.exe": "2371b91fdc310c57b8efe6553d41fead07b298ba55ddc36788bcec9b05c8a058",
+    "module.json": "c0bcf32ade75690ad3d7697f5c363d021ba3e194a403e4e35101b98ea2e287a9"
   }
 }
