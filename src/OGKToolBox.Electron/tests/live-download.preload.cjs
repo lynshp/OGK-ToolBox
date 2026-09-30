@@ -1,0 +1,18 @@
+require('./character-selection.preload.cjs');
+const {ipcRenderer}=require('electron');
+const root=process.env.OGK_LIVE_DOWNLOAD_ROOT+'\\game';
+localStorage.setItem('ogk-toolbox.game-root.v1',root);
+const summary={gameRoot:root,musicCount:0,cardCount:0,characterCount:0,resourceCount:0,diagnosticCount:0,gameVersion:'1.50.0'};
+window.ogk.cachedScan=async()=>({summary,characters:[],music:[],cards:[],resources:[],diagnostics:[]});
+window.ogk.librarySummary=async()=>summary;
+window.ogk.inspectHddSetup=async()=>({bepinex:{directoryExists:true,preloaderExists:true}});
+window.ogk.optionPackages=async()=>({directoryPath:root,exists:true,packages:[],totalFiles:0,totalSize:0});
+window.__live={results:[],progress:[]};
+window.ogk.packageManifest=()=>ipcRenderer.invoke('packages:manifest');
+window.ogk.downloadPackage=async request=>{try{const result=await ipcRenderer.invoke('packages:download',{...request,root});window.__live.results.push({id:request.id,kind:request.kind,ok:true,result});return result;}catch(e){window.__live.results.push({id:request.id,kind:request.kind,ok:false,error:String(e)});throw e;}};
+window.ogk.cancelPackage=id=>ipcRenderer.send('packages:cancel',id);
+window.ogk.onPackageProgress=cb=>{const fn=(_,p)=>{window.__live.progress.push(p);cb(p)};ipcRenderer.on('packages:progress',fn);return()=>ipcRenderer.removeListener('packages:progress',fn)};
+window.ogk.getUpdateStatus=()=>ipcRenderer.invoke('update:status');
+window.ogk.checkForUpdate=(...args)=>ipcRenderer.invoke('update:check',...args);
+window.ogk.setGithubSources=(...args)=>ipcRenderer.invoke('update:set-sources',...args);
+window.ogk.onUpdateStatus=cb=>{const fn=(_,s)=>cb(s);ipcRenderer.on('update:status',fn);ipcRenderer.send('update:subscribe');return()=>ipcRenderer.removeListener('update:status',fn)};

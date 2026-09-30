@@ -4,26 +4,12 @@ import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fastGithubManager } from "./fastgithub-manager";
+import { probeUpdateChannel, safeUpdateError, selectUpdateChannel, type UpdateFeed } from "./update-network";
+import { githubSources } from "./github-sources";
+import { createReleaseAssetProvider } from "./release-asset-provider";
+import { channelName, type DownloadSource, type UpdateChannel, type UpdateSource, type UpdateStatus } from "../src/update-models";
 
-export type UpdateState =
-  | "idle"
-  | "unsupported"
-  | "checking"
-  | "available"
-  | "not-available"
-  | "downloading"
-  | "ready"
-  | "error";
-
-export type UpdateStatus = {
-  packaged: boolean;
-  currentVersion: string;
-  availableVersion?: string;
-  state: UpdateState;
-  progress?: number;
-  error?: string;
-  hasToken: boolean;
-};
+export type { UpdateStatus } from "../src/update-models";
 
 const tokenHelp = "需要更新令牌。请在设置「关于」中填写对私有仓库具有 Contents: Read 权限的 GitHub fine-grained token。";
 
@@ -34,20 +20,26 @@ type Hooks = {
   getWindow(): BrowserWindow | undefined;
 };
 
-type UpdateFeed = { owner: string; repo: string; privateFeed: boolean };
-
 export class UpdateManager {
   private readonly listeners = new Set<(status: UpdateStatus) => void>();
   private status: UpdateStatus = {
     packaged: app.isPackaged,
     currentVersion: app.getVersion(),
     state: app.isPackaged ? "idle" : "unsupported",
-    hasToken: false
+    hasToken: false, source: "auto", downloadSource: "auto", ghproxy: { state: "unknown" },
+    channels: { fastgithub: { state: "unknown" }, github: { state: "unknown" } }, diagnostics: []
   };
   private installing = false;
   private promptedVersion?: string;
   private configured = false;
   private readonly fastGithub = fastGithubManager;
+  private operation?: Promise<UpdateStatus>;
+  private stopped = false;
+  private diagnosticToken?: string;
+  private downloadCancellation?: Parameters<typeof autoUpdater.downloadUpdate>[0];
+  private releaseAssets: string[] = [];
+  private activeProxyNode?: string;
+  private probeGeneration = 0;
 
   constructor(private readonly hooks: Hooks) {}
 
@@ -56,26 +48,37 @@ export class UpdateManager {
   }
 
   async start(): Promise<void> {
+    await githubSources.load();
+    Object.assign(this.status, githubSources.get());
+    githubSources.onNodes = (results, selected) => {
+      this.patch({ proxyNodes: results, proxyNode: selected,
+        ghproxy: { state: selected ? "reachable" : "failed", checkedAt: new Date().toISOString(), latencyMs: results.find(row => row.node === selected)?.latencyMs } });
+      for (const result of results) this.record(`GH-Proxy ${result.node} · ${result.error || `可达 ${result.latencyMs} ms`}`);
+    };
     this.status.hasToken = Boolean(await this.readToken());
     this.emit();
     this.registerIpc();
     if (!app.isPackaged) return;
 
-    autoUpdater.autoDownload = true;
+    // Await both checking and downloading under one operation lock.
+    autoUpdater.autoDownload = false;
+    // Avoid differential reconstruction failing at 100% then silently downloading again.
+    autoUpdater.disableDifferentialDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = false;
     autoUpdater.autoRunAppAfterInstall = true;
 
-    autoUpdater.on("checking-for-update", () => this.patch({ state: "checking", error: undefined }));
+    autoUpdater.on("checking-for-update", () => this.patch({ state: "checking", phase: "读取版本信息", error: undefined }));
     autoUpdater.on("update-available", info => {
       this.patch({ state: "available", availableVersion: info.version, error: undefined });
     });
     autoUpdater.on("update-not-available", () => {
       this.patch({ state: "not-available", availableVersion: undefined, progress: undefined, error: undefined });
-      void this.fastGithub.disable();
     });
     autoUpdater.on("download-progress", progress => {
-      this.patch({ state: "downloading", progress: progress.percent, error: undefined });
+      this.patch({ state: progress.percent >= 100 ? "verifying" : "downloading",
+        phase: progress.percent >= 100 ? "校验安装包" : "下载完整安装包",
+        progress: Math.min(99, Math.max(this.status.progress ?? 0, progress.percent)), error: undefined });
     });
     autoUpdater.on("update-downloaded", info => {
       this.patch({
@@ -84,21 +87,26 @@ export class UpdateManager {
         progress: 100,
         error: undefined
       });
-      void this.fastGithub.disable();
-      void this.promptInstall(info.version);
     });
     autoUpdater.on("error", error => {
-      this.patch({ state: "error", error: mapUpdateError(error) });
-      void this.fastGithub.disable();
+      // The awaited operation handles failures and fallback exactly once.
+      if (!this.operation) this.patch({ state: "error", error: mapUpdateError(safeUpdateError(error, this.diagnosticToken)) });
     });
 
-    await this.check(false);
+    await this.check();
   }
 
   private registerIpc(): void {
     ipcMain.handle("app:get-version", () => app.getVersion());
     ipcMain.handle("update:status", () => this.status);
+    ipcMain.handle("update:set-sources", async (_event, source: UpdateSource, downloadSource: DownloadSource = "auto") => {
+      if (this.operation) throw new Error("应用更新进行中，请完成后再修改来源。");
+      await githubSources.save(source, downloadSource);
+      this.patch({ source, downloadSource });
+      return this.status;
+    });
     ipcMain.handle("update:set-token", async (_event, token: unknown) => {
+      if (this.operation) throw new Error("更新进行中，请完成后再修改令牌。");
       if (typeof token !== "string") throw new Error("更新令牌无效。");
       await this.writeToken(token.trim());
       this.status.hasToken = Boolean(token.trim());
@@ -106,7 +114,11 @@ export class UpdateManager {
       this.emit();
       return this.status;
     });
-    ipcMain.handle("update:check", () => this.check(true));
+    ipcMain.handle("update:check", (_event, source?: unknown, downloadSource?: unknown) => {
+      if (source !== undefined && source !== "auto" && source !== "fastgithub" && source !== "github" && source !== "ghproxy") throw new Error("更新通道无效。");
+      if (downloadSource !== undefined && downloadSource !== "auto" && downloadSource !== "ghproxy" && downloadSource !== "origin") throw new Error("下载线路无效。");
+      return this.check(source as UpdateSource | undefined, downloadSource as DownloadSource | undefined);
+    });
     ipcMain.handle("update:install", () => this.install());
     ipcMain.on("update:subscribe", event => {
       const send = (status: UpdateStatus) => {
@@ -118,12 +130,32 @@ export class UpdateManager {
     });
   }
 
-  private async check(manual: boolean): Promise<UpdateStatus> {
+  private check(source = this.status.source ?? "auto", downloadSource = this.status.downloadSource ?? "auto"): Promise<UpdateStatus> {
+    if (this.operation) return this.operation;
+    if (this.stopped || this.installing) return Promise.resolve(this.status);
+    const operation = Promise.resolve().then(() => this.runCheck(source, downloadSource)).catch(error => {
+      this.patch({ state: "error", error: mapUpdateError(safeUpdateError(error, this.diagnosticToken)) });
+      return this.status;
+    });
+    this.operation = operation;
+    void operation.finally(() => { if (this.operation === operation) this.operation = undefined; });
+    return operation;
+  }
+
+  private async runCheck(source: UpdateSource, downloadSource: DownloadSource): Promise<UpdateStatus> {
+    await githubSources.save(source, downloadSource);
+    this.activeProxyNode = undefined;
+    const generation = ++this.probeGeneration;
+    const isCurrent = () => !this.stopped && generation === this.probeGeneration;
     if (!app.isPackaged) {
       this.patch({ state: "unsupported", error: "开发模式不检查更新。" });
       return this.status;
     }
 
+    this.patch({ source, downloadSource, activeChannel: undefined, activeDownload: undefined, proxyNode: undefined, proxyNodes: [],
+      ghproxy: { state: "unknown" }, progress: undefined, error: undefined,
+      state: "checking", phase: "检测更新通道", diagnostics: [],
+      channels: { fastgithub: { state: "unknown" }, github: { state: "unknown" } } });
     const feed = readUpdateFeed();
     if (!feed) {
       this.patch({
@@ -134,22 +166,111 @@ export class UpdateManager {
     }
 
     const token = await this.readToken();
+    this.diagnosticToken = token;
     this.status.hasToken = Boolean(token);
     if (feed.privateFeed && !token) {
       this.patch({ state: "error", error: tokenHelp });
       return this.status;
     }
 
-    await this.fastGithub.enable();
-    this.configureFeed(feed, token);
-    try {
-      await autoUpdater.checkForUpdates();
-    } catch (error) {
-      this.patch({ state: "error", error: mapUpdateError(error) });
-      await this.fastGithub.disable();
+    // Probe independent sessions concurrently. Only the selected route configures the updater.
+    const pending = new Map<UpdateChannel, Promise<{channel: UpdateChannel; reachable: boolean}>>();
+    const launch = (channel: UpdateChannel) => {
+      this.patchChannel(channel, {state:"checking"});
+      const probe = (async () => {
+        try {
+          let latencyMs: number | undefined;
+          if (channel === "ghproxy") {
+            if (feed.privateFeed) throw new Error("GH-Proxy 不支持私有更新源");
+            const proxy = await githubSources.probeMetadata(
+              `https://github.com/${feed.owner}/${feed.repo}/releases/latest/download/latest.yml`,
+              (results, selected) => {
+                if (!isCurrent()) return;
+                this.patch({proxyNodes:results, proxyNode:selected});
+              });
+            if (!proxy.node) throw new Error("所有 GH-Proxy 版本节点不可用");
+            if (isCurrent()) this.activeProxyNode = proxy.node;
+            latencyMs = proxy.latencyMs;
+          } else latencyMs = await probeUpdateChannel(feed, token, channel);
+          if (isCurrent()) {
+            this.patchChannel(channel, {state:"reachable",latencyMs,checkedAt:new Date().toISOString()});
+            this.record(`${channelName(channel)}：更新源可达（${latencyMs} ms）`);
+          }
+          return {channel, reachable:true};
+        } catch (error) {
+          if (isCurrent()) {
+            const detail = safeUpdateError(error, token);
+            this.patchChannel(channel, {state:"failed",error:detail,checkedAt:new Date().toISOString()});
+            this.record(`${channelName(channel)} · 连通检测失败：${detail}`);
+          }
+          return {channel, reachable:false};
+        }
+      })();
+      pending.set(channel, probe);
+    };
+    for (const channel of ["fastgithub", "github", "ghproxy"] as const) launch(channel);
+    while (pending.size) {
+      const candidate = source === "auto"
+        ? await Promise.race(pending.values())
+        : await pending.get(source);
+      if (!candidate || !isCurrent()) return this.status;
+      const {channel, reachable} = candidate;
+      pending.delete(channel);
+      if (source !== "auto") pending.clear();
+      if (!reachable) continue;
+      this.patch({ activeChannel: channel, state: "checking", phase: "读取版本信息", progress: undefined });
+      try {
+        await selectUpdateChannel(channel);
+        if (this.stopped) return this.status;
+        this.configured = false;
+        if (channel === "ghproxy") {
+          autoUpdater.setFeedURL({provider:"generic",url:`${this.activeProxyNode}/https://github.com/${feed.owner}/${feed.repo}/releases/latest/download/`,useMultipleRangeRequest:false});
+        } else this.configureFeed(feed, token);
+        const result = await autoUpdater.checkForUpdates();
+        this.downloadCancellation = result?.cancellationToken;
+        if (this.getStatusState() === "checking") throw new Error("更新服务未返回版本检查结果");
+      } catch (error) {
+        const detail = safeUpdateError(error, token);
+        this.patchChannel(channel, { ...this.status.channels![channel], state: "failed", error: detail });
+        this.record(`${channelName(channel)} · 读取版本失败：${detail}`);
+        continue;
+      }
+      if (this.stopped) return this.status;
+      githubSources.useChannel(channel);
+      this.patch({activeDownload: channel});
+      if (this.status.state === "available") {
+        if (this.stopped) return this.status;
+        const downloadLabel = this.status.activeDownload === "ghproxy" ? "GH-Proxy" : channelName(channel);
+        this.patch({ state: "downloading", phase: "下载完整安装包", progress: 0 });
+        this.record(`${downloadLabel} · 下载完整安装包 ${this.status.availableVersion}`);
+        try {
+          await autoUpdater.downloadUpdate(this.downloadCancellation);
+          if (this.getStatusState() !== "ready") throw new Error("下载结束但未收到安装包校验成功状态");
+          this.record("安装包已校验，可重启安装");
+          if (!this.stopped) void this.promptInstall(this.status.availableVersion);
+        } catch (error) {
+          const detail = safeUpdateError(error, token);
+          this.record(`${downloadLabel} · ${this.status.phase}失败：${detail}`);
+          // Do not silently restart a large download on another route after visible progress.
+          this.patch({ state: "error", error: `${downloadLabel} · ${this.status.phase}失败：${mapUpdateError(detail)}。可切换下载线路后重新检查。` });
+        }
+      }
+      return this.status;
     }
-    if (manual && this.status.state === "ready") void this.promptInstall(this.status.availableVersion);
+    this.patch({ state: "error", error: source === "auto"
+      ? "所有更新通道均未能完成版本检查。展开诊断详情查看原因，可选择通道后重新检查。"
+      : `${channelName(source)} 无法完成版本检查。可选择另一通道或自动选择后重试。` });
     return this.status;
+  }
+
+  private getStatusState() { return this.status.state; }
+
+  private patchChannel(channel: UpdateChannel, value: NonNullable<UpdateStatus["channels"]>[UpdateChannel]): void {
+    this.patch({ channels: { ...this.status.channels!, [channel]: value }, ...(channel === "ghproxy" ? {ghproxy:value} : {}) });
+  }
+
+  private record(message: string): void {
+    this.patch({ diagnostics: [...(this.status.diagnostics ?? []), `${new Date().toISOString()} ${message}`].slice(-30) });
   }
 
   private async install(): Promise<void> {
@@ -170,6 +291,9 @@ export class UpdateManager {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
+    ++this.probeGeneration;
+    this.downloadCancellation?.cancel();
     await this.fastGithub.disable();
   }
 
@@ -190,9 +314,17 @@ export class UpdateManager {
   }
 
   private configureFeed(feed: UpdateFeed, token?: string): void {
-    if (token) process.env.GH_TOKEN = token;
+    if (feed.privateFeed && token) process.env.GH_TOKEN = token;
     else delete process.env.GH_TOKEN;
     if (this.configured) return;
+    if (!feed.privateFeed) {
+      autoUpdater.setFeedURL({
+        provider: "custom", owner: feed.owner, repo: feed.repo, releaseType: "release",
+        updateProvider: createReleaseAssetProvider(urls => { this.releaseAssets = urls; }, () => undefined)
+      });
+      this.configured = true;
+      return;
+    }
     autoUpdater.setFeedURL({
       provider: "github",
       owner: feed.owner,

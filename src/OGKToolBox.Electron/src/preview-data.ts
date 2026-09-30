@@ -210,6 +210,7 @@ export function installPreviewBridge(expressionError: boolean): void {
     minimizeWindow: async () => {}, toggleWindowMaximize: async () => false, closeWindow: async () => {},
     isWindowMaximized: async () => false, onWindowStateChange: () => () => {},
     getVersion: async () => "preview",
+    setGithubSources: async (source, downloadSource) => ({ packaged: false, currentVersion: "preview", state: "unsupported", hasToken: false, source, downloadSource }),
     getUpdateStatus: async () => ({
       packaged: false, currentVersion: "preview", state: "unsupported", hasToken: false,
       error: "开发模式不检查更新。"

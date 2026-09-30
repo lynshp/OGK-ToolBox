@@ -1,5 +1,7 @@
 import type { Config, LibrarySection, ResourcePage, Scan, Summary, ThumbnailCache } from "./models";
 import type { ControllerCommandResult, ControllerModuleStatus, ControllerSnapshot, HallRequest, LeverRequest, PicoLightingRequest } from "./controller-models";
+import type { DownloadSource, UpdateSource, UpdateStatus } from "./update-models";
+export type { UpdateState, UpdateStatus } from "./update-models";
 
 export type GameLaunchOptions = { width: number; height: number; fullscreen: boolean };
 export type HddSetupInspection = {
@@ -64,8 +66,9 @@ export interface OgkBridge {
   onWindowStateChange(callback: (maximized: boolean) => void): () => void;
   getVersion(): Promise<string>;
   getUpdateStatus(): Promise<UpdateStatus>;
+  setGithubSources(source: UpdateSource, downloadSource: DownloadSource): Promise<UpdateStatus>;
   setUpdateToken(token: string): Promise<UpdateStatus>;
-  checkForUpdate(): Promise<UpdateStatus>;
+  checkForUpdate(source?: UpdateSource, downloadSource?: DownloadSource): Promise<UpdateStatus>;
   installUpdate(): Promise<void>;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
   controllerSnapshot(): Promise<ControllerSnapshot | null>;
@@ -204,25 +207,5 @@ export type PackageProgress = {
   error?: string;
 };
 export type PackageInstallResult = { kind: PackageDownloadKind; id: string; path: string };
-
-export type UpdateState =
-  | "idle"
-  | "unsupported"
-  | "checking"
-  | "available"
-  | "not-available"
-  | "downloading"
-  | "ready"
-  | "error";
-
-export type UpdateStatus = {
-  packaged: boolean;
-  currentVersion: string;
-  availableVersion?: string;
-  state: UpdateState;
-  progress?: number;
-  error?: string;
-  hasToken: boolean;
-};
 
 declare global { interface Window { ogk: OgkBridge } }

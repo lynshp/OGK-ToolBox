@@ -1026,6 +1026,14 @@ body { overflow:hidden; }
 .about-meta div { display:grid; gap:3px; }
 .about-meta dt { color:#6a7788; font-size:11px; }
 .about-meta dd { margin:0; font-size:14px; font-weight:600; }
+.about-meta dd { overflow-wrap:anywhere; }
+.about-meta .update-channel-picker { display:block; width:min(360px,100%); }
+.update-channel-picker .filter-trigger { width:100%; white-space:normal; text-align:left; }
+.update-diagnostics { margin-top:14px; font-size:12px; }
+.update-diagnostics summary { cursor:pointer; }
+.update-diagnostics textarea { display:block; box-sizing:border-box; width:100%; margin-top:8px; padding:12px 14px; border:1px solid var(--pencil-border); border-radius:var(--radius-control); background:var(--pencil-canvas); color:var(--pencil-ink); resize:vertical; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; font:inherit; line-height:1.6; }
+.update-diagnostics textarea:focus-visible { outline:2px solid #6b5fd2; outline-offset:2px; }
+.settings-panel .update-community { margin-top:12px; }
 .update-progress { height:6px; margin-top:14px; overflow:hidden; border-radius:99px; background:#e6ebf1; }
 .update-progress > i { display:block; height:100%; background:#d84c17; }
 .update-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }

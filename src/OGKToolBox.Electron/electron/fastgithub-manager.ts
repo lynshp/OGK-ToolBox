@@ -1,7 +1,7 @@
 import { app, session } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
@@ -9,7 +9,7 @@ import path from "node:path";
 const proxyHost = "127.0.0.1";
 const proxyPort = 38457;
 const proxyUrl = `http://${proxyHost}:${proxyPort}`;
-const proxyPartition = "electron-updater";
+const proxyPartition = "ogk-github";
 
 /**
  * Runs the embedded FastGithub build for GitHub traffic in an isolated
@@ -19,10 +19,27 @@ const proxyPartition = "electron-updater";
 export class FastGithubManager {
   private process?: ChildProcess;
   private startPromise?: Promise<boolean>;
-  private proxyEnabled = false;
+  private caCertificate?: X509Certificate;
+  lastError?: string;
+
+  // Package downloads and application updates must not change each other's route.
+  async configureUpdater(useFastGithub: boolean): Promise<void> {
+    if (useFastGithub && !await this.enable()) {
+      throw new Error(this.lastError || "FastGithub 启动失败");
+    }
+    const target = session.fromPartition("electron-updater", { cache: false });
+    await target.closeAllConnections();
+    await target.setProxy(useFastGithub
+      ? { proxyRules: `http=${proxyUrl};https=${proxyUrl}`, proxyBypassRules: "<local>" }
+      : { mode: "direct" });
+    target.setCertificateVerifyProc(useFastGithub ? (request, callback) => {
+      const trusted = isTrustedFastGithubCertificate(request.hostname, request.certificate.data, this.caCertificate);
+      callback(trusted || request.verificationResult === "OK" ? 0 : -2);
+    } : null);
+  }
 
   async enable(): Promise<boolean> {
-    if (process.platform !== "win32") return false;
+    if (process.platform !== "win32") { this.lastError = "FastGithub 仅支持 Windows"; return false; }
 
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.startAndConfigure();
@@ -34,33 +51,44 @@ export class FastGithubManager {
   }
 
   async disable(): Promise<void> {
-    this.startPromise = undefined;
-    const updaterSession = session.fromPartition(proxyPartition, { cache: false });
-    if (this.proxyEnabled) {
-      this.proxyEnabled = false;
-      try {
-        await updaterSession.closeAllConnections();
-        updaterSession.setCertificateVerifyProc(null);
-        await updaterSession.setProxy({ mode: "direct" });
-      } catch {
-        // The updater session may already be closing during application exit.
+    try {
+      await this.startPromise;
+      this.startPromise = undefined;
+      for (const partition of ["electron-updater", proxyPartition]) {
+        try {
+          const target = session.fromPartition(partition, { cache: false });
+          await target.closeAllConnections();
+          target.setCertificateVerifyProc(null);
+          await target.setProxy({ mode: "direct" });
+        } catch {
+          // A session may already be closing; still stop the owned child process.
+        }
       }
-    }
-    await this.stopProcess();
+    } finally { await this.stopProcess(); }
   }
 
-  async fetch(input: string, init?: RequestInit): Promise<Response> {
-    if (!await this.enable()) return globalThis.fetch(input, init);
+  async fetch(input: string, init?: RequestInit, requireProxy = false): Promise<Response> {
+    if (!await this.enable()) {
+      if (requireProxy) throw new Error(this.lastError || "FastGithub 启动失败");
+      return globalThis.fetch(input, init);
+    }
     const githubSession = session.fromPartition(proxyPartition, { cache: false });
     return githubSession.fetch(input, init);
   }
 
   private async startAndConfigure(): Promise<boolean> {
+    this.lastError = undefined;
     const executable = path.join(process.resourcesPath, "fastgithub", "fastgithub.exe");
-    if (!existsSync(executable)) return false;
+    if (!existsSync(executable)) { this.lastError = "安装目录缺少 fastgithub/fastgithub.exe"; return false; }
 
     if (!this.process || this.process.killed || this.process.exitCode !== null) {
       const dataRoot = path.join(app.getPath("userData"), "fastgithub");
+      try {
+        await mkdir(dataRoot, { recursive: true });
+      } catch (error) {
+        this.lastError = `无法创建 FastGithub 数据目录：${error instanceof Error ? error.message : String(error)}`;
+        return false;
+      }
       const child = spawn(executable, [
         "FastGithub:Embedded=true",
         `ParentProcessId=${process.pid}`,
@@ -72,18 +100,21 @@ export class FastGithubManager {
         windowsHide: true
       });
       this.process = child;
+      child.on("error", error => { this.lastError = `FastGithub 进程错误：${error.message}`; });
     }
 
     if (!await this.waitUntilReady(this.process)) {
+      this.lastError ||= "FastGithub 本地代理未就绪（端口 38457），进程可能退出或启动超时";
       await this.stopProcess();
       return false;
     }
 
     const dataRoot = path.join(app.getPath("userData"), "fastgithub");
-    let caFingerprint: string;
+    let caCertificate: X509Certificate;
     try {
-      caFingerprint = new X509Certificate(await readFile(path.join(dataRoot, "cacert", "fastgithub.cer"))).fingerprint;
+      caCertificate = new X509Certificate(await readFile(path.join(dataRoot, "cacert", "fastgithub.cer")));
     } catch {
+      this.lastError = "FastGithub 本地证书未生成或无法读取";
       await this.stopProcess();
       return false;
     }
@@ -96,14 +127,13 @@ export class FastGithubManager {
       });
       updaterSession.setCertificateVerifyProc((request, callback) => {
         const embeddedCertificate =
-          isGithubHost(request.hostname) &&
-          request.certificate.issuerName === "FastGithub" &&
-          request.certificate.issuerCert?.fingerprint === caFingerprint;
+          isTrustedFastGithubCertificate(request.hostname, request.certificate.data, caCertificate);
         callback(embeddedCertificate || request.verificationResult === "OK" ? 0 : -2);
       });
-      this.proxyEnabled = true;
+      this.caCertificate = caCertificate;
       return true;
     } catch {
+      this.lastError = "无法配置 FastGithub 的 Electron 代理会话";
       await this.stopProcess();
       return false;
     }
@@ -166,4 +196,16 @@ function onceExit(child: ChildProcess): Promise<void> {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+// FastGithub can send only its leaf certificate, so Electron's issuerCert may be absent.
+// Verify the actual signature against our own CA instead of trusting the issuer's name.
+export function isTrustedFastGithubCertificate(hostname: string, pem: string, ca?: X509Certificate, now = Date.now()): boolean {
+  if (!ca || !isGithubHost(hostname)) return false;
+  try {
+    const certificate = new X509Certificate(pem);
+    const valid = (value: X509Certificate) => now >= Date.parse(value.validFrom) && now <= Date.parse(value.validTo);
+    return ca.ca && valid(ca) && valid(certificate) && !!certificate.checkHost(hostname) &&
+      certificate.checkIssued(ca) && certificate.verify(ca.publicKey);
+  } catch { return false; }
 }

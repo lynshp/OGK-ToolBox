@@ -9,7 +9,7 @@ import { BackendManager } from "./backend-manager";
 import { windowLayout } from "./window-layout";
 import { ControllerHub } from "./controller-hub";
 import { createControllerBackends } from "./controller-registry";
-import { fastGithubManager } from "./fastgithub-manager";
+import { githubSources } from "./github-sources";
 import { ensurePackageDataConfig, packageExtractRoot } from "./package-extractor";
 import { UpdateManager } from "./update-manager";
 
@@ -395,7 +395,7 @@ function releaseSha256(value: unknown): string | undefined {
 
 async function githubReleaseSnapshot(repository: string, tag: string): Promise<GithubReleaseSnapshot> {
   const [owner, name] = repository.split("/");
-  const response = await fastGithubManager.fetch(
+  const response = await githubSources.fetch(
     `https://api.github.com/repos/${owner}/${name}/releases/tags/${encodeURIComponent(tag)}`,
     { headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }, cache: "no-store" }
   );
@@ -508,9 +508,9 @@ async function packageManifestPayload(value: unknown): Promise<PackageManifestPa
 
 async function packageManifest() {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
+  const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const response = await fastGithubManager.fetch(packageManifestUrl, {
+    const response = await githubSources.fetch(packageManifestUrl, {
       headers: { Accept: "application/json" }, signal: controller.signal, cache: "no-store"
     });
     if (!response.ok) throw new Error(`GitHub 更新清单请求失败（${response.status}）。`);
@@ -643,7 +643,7 @@ async function downloadPackageAsset(
   tempPath: string
 ): Promise<void> {
   const totalFromManifest = entry.size > 0 ? entry.size : 0;
-  const response = await fastGithubManager.fetch(packageAssetUrl(manifest, entry.asset, entry.release), {
+  const response = await githubSources.fetch(packageAssetUrl(manifest, entry.asset, entry.release), {
     headers: { Accept: "application/octet-stream" }, signal: controller.signal
   });
   if (!response.ok) throw new Error(`GitHub 下载失败（${response.status}）。`);

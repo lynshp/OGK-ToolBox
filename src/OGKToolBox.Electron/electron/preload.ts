@@ -75,8 +75,9 @@ contextBridge.exposeInMainWorld("ogk", {
   },
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   getUpdateStatus: () => ipcRenderer.invoke("update:status"),
+  setGithubSources: (source: string, downloadSource: string) => ipcRenderer.invoke("update:set-sources", source, downloadSource),
   setUpdateToken: (token: string) => ipcRenderer.invoke("update:set-token", token),
-  checkForUpdate: () => ipcRenderer.invoke("update:check"),
+  checkForUpdate: (source?: string, downloadSource?: string) => ipcRenderer.invoke("update:check", source, downloadSource),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   onUpdateStatus: (callback: (status: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: unknown) => callback(status);

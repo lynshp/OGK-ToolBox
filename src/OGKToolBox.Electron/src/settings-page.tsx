@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import type { UpdateStatus } from "./bridge";
 import type { LayoutMode } from "./use-layout";
+import { channelName, type UpdateSource } from "./update-models";
+import { UpdateChannelPicker } from "./update-channel-picker";
 
 const scales = [1, 1.25, 1.5, 1.75, 2] as const;
 const defaultTitle = "春菜的便当盒";
@@ -16,7 +18,8 @@ type Props = {
 };
 
 export function SettingsPage(props: Props) {
-  const [section, setSection] = useState<"appearance" | "brand" | "about">("appearance");
+  const [section, setSection] = useState<"appearance" | "brand" | "about">(() => sessionStorage.getItem("ogk:github-settings") ? "about" : "appearance");
+  useEffect(() => { sessionStorage.removeItem("ogk:github-settings"); }, []);
   const textOptions = scales.filter(scale => scale >= props.uiScale);
   return <div className="settings-page">
     <div className="settings-titlebar"><PageTitle title="设置" desc="调整外观、界面大小、文字与本地数据偏好。"/></div>
@@ -61,9 +64,11 @@ export function SettingsPage(props: Props) {
 function statusLabel(status: UpdateStatus): string {
   switch (status.state) {
     case "unsupported": return status.error || "开发模式不检查更新。";
-    case "checking": return "正在检查更新…";
-    case "available": return status.availableVersion ? `发现新版本 ${status.availableVersion}，准备下载。` : "发现新版本。";
+    case "checking": return `${status.phase || "正在检查更新"}…`;
+    case "available": return status.phase === "检测 GH-Proxy 安装包线路" ? `${status.phase}…`
+      : status.availableVersion ? `发现新版本 ${status.availableVersion}，准备下载。` : "发现新版本。";
     case "downloading": return `正在下载更新${status.progress != null ? `（${Math.round(status.progress)}%）` : "…"}`;
+    case "verifying": return "下载传输结束，正在校验安装包，请稍候…";
     case "not-available": return "已是最新版本。";
     case "ready": return status.availableVersion ? `新版本 ${status.availableVersion} 已就绪，重启后完成更新。` : "更新已就绪，重启后完成更新。";
     case "error": return status.error || "检查更新失败。";
@@ -76,20 +81,31 @@ function AboutPanel() {
     packaged: false, currentVersion: "", state: "idle", hasToken: false
   });
   const [busy, setBusy] = useState(false);
+  const [source, setSource] = useState<UpdateSource>("auto");
+  const running = busy || ["checking", "available", "downloading", "verifying"].includes(status.state);
   useEffect(() => {
     let active = true;
-    void window.ogk.getUpdateStatus().then(value => { if (active) setStatus(value); });
+    void window.ogk.getUpdateStatus().then(value => { if (active) { setStatus(value); setSource(value.source ?? "auto"); } });
     const stop = window.ogk.onUpdateStatus(value => { if (active) setStatus(value); });
     return () => { active = false; stop(); };
   }, []);
   const check = async () => {
     setBusy(true);
-    try { setStatus(await window.ogk.checkForUpdate()); }
+    try { setStatus(await window.ogk.checkForUpdate(source)); }
     catch (error) {
       setStatus(current => ({
         ...current, state: "error",
         error: error instanceof Error ? error.message : "检查更新失败。"
       }));
+    } finally { setBusy(false); }
+  };
+  const saveSources = async (nextSource: UpdateSource) => {
+    setBusy(true);
+    try {
+      const next = await window.ogk.setGithubSources(nextSource, "auto");
+      setStatus(next); setSource(nextSource);
+    } catch (error) {
+      setStatus(current => ({ ...current, error: String(error), state: "error" }));
     } finally { setBusy(false); }
   };
   const install = async () => {
@@ -109,15 +125,23 @@ function AboutPanel() {
       <dl className="about-meta">
         <div><dt>当前版本</dt><dd>{status.currentVersion || "—"}</dd></div>
         <div><dt>更新源</dt><dd>github.com/lynshp/OGKToolBox-releases</dd></div>
-        <div><dt>更新状态</dt><dd>{statusLabel(status)}</dd></div>
+        <div><dt>GitHub 来源</dt><dd><UpdateChannelPicker value={source} onChange={value => void saveSources(value as UpdateSource)} status={status} disabled={running}/></dd></div>
+        {status.activeChannel && <div><dt>本次使用来源</dt><dd>{channelName(status.activeChannel)}</dd></div>}
+        {status.activeChannel === "ghproxy" && status.proxyNode && <div><dt>GH-Proxy 可用节点</dt><dd>{status.proxyNode.replace("https://", "")}</dd></div>}
+        <div><dt>更新状态</dt><dd role="status">{statusLabel(status)}</dd></div>
       </dl>
-      {status.state === "downloading" && <div className="update-progress" aria-label="下载进度">
+      {["downloading", "verifying"].includes(status.state) && <div className="update-progress" role="progressbar" aria-label="下载进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={status.progress ?? 0}>
         <i style={{ width: `${Math.max(0, Math.min(100, status.progress ?? 0))}%` }}/>
       </div>}
       <div className="update-actions">
-        <button type="button" onClick={() => void check()} disabled={busy || status.state === "unsupported" || status.state === "downloading"}>检查更新</button>
+        <button type="button" onClick={() => void check()} disabled={running || status.state === "unsupported"}>{running ? "更新处理中…" : "检查更新"}</button>
         <button type="button" onClick={() => void install()} disabled={busy || status.state !== "ready"}>重启并安装</button>
       </div>
+      <p className="update-community">加入群聊：827579852获取更新。</p>
+      {!!status.diagnostics?.length && <details className="update-diagnostics">
+        <summary>诊断详情</summary>
+        <textarea readOnly rows={7} aria-label="更新诊断详情，可选择复制" value={`当前版本：${status.currentVersion}\n本次选择：${status.source === "auto" || !status.source ? "自动选择" : channelName(status.source)}\n${status.diagnostics.join("\n")}`}/>
+      </details>}
     </section>
   </article>;
 }
