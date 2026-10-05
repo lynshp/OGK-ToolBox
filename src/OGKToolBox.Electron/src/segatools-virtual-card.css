@@ -1,0 +1,31 @@
+.virtual-aime-card > .config-entry { grid-template-columns:minmax(160px,1fr) minmax(260px,400px); }
+.virtual-aime-card.is-disabled > .config-entry > span { color:#a0aab7; }
+.virtual-card-controls { min-width:0; align-items:stretch; }
+.virtual-card-controls .player-picker { min-width:0; flex:1; }
+.virtual-card-controls .filter-trigger,.virtual-card-controls > .player-card-eye { height:52px; min-height:52px; }
+.virtual-card-controls .filter-trigger { width:100%; }
+.virtual-card-controls > .player-card-eye { flex:0 0 44px; }
+.virtual-card-controls .player-picker-copy { min-width:0; }
+.virtual-card-controls .player-picker-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.virtual-card-menu.player-picker-menu .filter-options > button { height:48px; min-height:48px; padding-top:6px; padding-bottom:6px; }
+.virtual-card-menu .virtual-card-editor { display:grid; gap:8px; min-width:0; margin:0; padding:8px; }
+.virtual-card-editor-title { color:#25364b; font-size:13px; line-height:1.5; }
+.virtual-card-menu .virtual-card-editor > label { display:block; min-height:0; border:0; color:#536174; font-size:12px; }
+.virtual-card-input { display:flex; align-items:stretch; gap:6px; min-width:0; }
+.virtual-card-input input { flex:1; width:0; min-width:0; height:40px; text-align:left; font-family:Consolas,"Cascadia Code",monospace; }
+.virtual-card-input .player-card-eye { flex-basis:40px; height:40px; min-height:40px; }
+.virtual-card-input input[aria-invalid="true"] { border-color:#c45b46; }
+.virtual-card-editor-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:6px; padding-top:4px; }
+.virtual-card-editor-actions button { height:36px; min-height:36px; }
+.virtual-card-error { margin:0; color:#b74435; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.virtual-aime-card > .virtual-card-error { margin:8px 0 12px; }
+.virtual-card-operation { margin:0; color:#748193; font-size:12px; line-height:1.6; }
+.virtual-aime-card > .virtual-card-operation { margin:8px 0 14px; }
+.dark .virtual-card-editor-title { color:#ebeff5; }
+.dark .virtual-card-menu .virtual-card-editor > label { color:#c7d1de; }
+.dark .virtual-card-error { color:#ffb092; }
+.dark .virtual-card-operation { color:#9eabb9; }
+@media(max-width:760px) {
+  .virtual-aime-card > .config-entry { grid-template-columns:minmax(0,1fr); gap:7px; padding:10px 0; }
+  .virtual-card-controls { justify-content:stretch; }
+}

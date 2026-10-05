@@ -24,15 +24,18 @@ if (!process.versions.electron) {
     try {
       await win.loadFile(path.resolve(__dirname,'../dist/index.html'));
       await wait(`document.querySelector('[data-nav-page="player-saves"]')`);await press('[data-nav-page="player-saves"]');
+      await wait(`document.querySelector('[data-player-data-intro-dismiss]')`);await press('[data-player-data-intro-dismiss]');await wait(`!document.querySelector('[data-player-data-intro]')`);
       await wait(`document.querySelectorAll('.player-best-list>li').length===110`);
       assert.deepEqual(await run(`Array.from(document.querySelectorAll('.player-best-list')).map(list=>list.children.length)`),[50,10,50]);
       assert.equal(await run(`document.querySelector('.player-current-rating b').textContent`),'16.875');
       assert.equal(await run(`document.querySelectorAll('.player-best-incomplete').length`),0);
       assert.equal(await run(`(()=>{const cards=Array.from(document.querySelectorAll('.player-best-list>li'));return cards.every(c=>getComputedStyle(c).borderTopWidth==='1px'&&c.querySelector('.player-best-artwork')&&c.querySelector('.player-best-score')&&c.querySelector('.player-best-contribution'))&&getComputedStyle(document.querySelector('.player-best-list')).display==='grid';})()`),true);
       await overflow();await snap('best110-full-light');
-      const header = await run(`document.querySelector('.player-results-heading').getBoundingClientRect().top`);
+      const listHeight = await run(`document.querySelector('.player-best-scroll').clientHeight`);
       await run(`document.querySelector('.player-best-scroll').scrollTop=1e6`);await snap('best110-platinum');
-      assert.equal(await run(`document.querySelector('.player-results-heading').getBoundingClientRect().top`),header);
+      assert.equal(await run(`document.querySelector('.player-summary-collapse').inert`),true);
+      assert.equal(await run(`Number(getComputedStyle(document.querySelector('.player-save-results')).getPropertyValue('--player-focus'))`),1);
+      assert.ok(await run(`document.querySelector('.player-best-scroll').clientHeight`)>listHeight);
       await press('[data-record-tab="recent"]');await wait(`document.querySelectorAll('.player-recent li').length===10`);
       assert.equal(await run(`document.querySelector('.player-recent-grid').scrollHeight<=document.querySelector('.player-recent-grid').clientHeight+1`),true);
       await press('[data-nav-page="settings"]');await wait(`document.querySelector('.theme-choice')`);await run(`Array.from(document.querySelectorAll('.theme-choice')).find(b=>b.textContent==='深色').click()`);await press('[data-nav-page="player-saves"]');await wait(`document.querySelector('.player-best-scroll')`);

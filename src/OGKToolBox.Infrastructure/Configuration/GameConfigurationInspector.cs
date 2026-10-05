@@ -347,14 +347,14 @@ public sealed class GameConfigurationInspector : IGameConfigurationInspector
         Add(GameConfigurationFileKind.SegaTools, "vfs", "amfs", ConfigurationValueKind.Path, "AMFS 数据目录", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "vfs", "option", ConfigurationValueKind.Path, "Option 数据包目录", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "vfs", "appdata", ConfigurationValueKind.Path, "可写应用数据目录", addable: true);
-        Add(GameConfigurationFileKind.SegaTools, "aime", "enable", ConfigurationValueKind.Boolean, "启用 Aime 模拟");
+        Add(GameConfigurationFileKind.SegaTools, "aime", "enable", ConfigurationValueKind.Boolean, "启用 Aime 模拟", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "aime", "aimePath", ConfigurationValueKind.Path, "Aime 卡号文件路径");
         Add(GameConfigurationFileKind.SegaTools, "aime", "aimeGen", ConfigurationValueKind.Boolean, "没有卡号时自动生成 Aime 卡号");
         Add(GameConfigurationFileKind.SegaTools, "aime", "felicaPath", ConfigurationValueKind.Path, "FeliCa ID 文件路径");
         Add(GameConfigurationFileKind.SegaTools, "aime", "portNo", ConfigurationValueKind.Integer, "读卡器 COM 口", defaultValue: "0", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "aime", "scan", ConfigurationValueKind.Text, "按住此键模拟刷卡", defaultValue: "0x0D", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "vfd", "enable", ConfigurationValueKind.Boolean, "启用 VFD 显示模拟");
-        Add(GameConfigurationFileKind.SegaTools, "dns", "default", ConfigurationValueKind.Text, "服务器");
+        Add(GameConfigurationFileKind.SegaTools, "dns", "default", ConfigurationValueKind.Text, "服务器", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "dns", "AimeDB", ConfigurationValueKind.Text, "读卡器服务器", defaultValue: "", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "dns", "replaceHost", ConfigurationValueKind.Boolean, "replaceHost", defaultValue: "0", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "netenv", "enable", ConfigurationValueKind.Boolean, "启用网络环境模拟");
@@ -364,17 +364,17 @@ public sealed class GameConfigurationInspector : IGameConfigurationInspector
         Add(GameConfigurationFileKind.SegaTools, "system", "freeplay", ConfigurationValueKind.Boolean, "启用免费游戏模式");
         Add(GameConfigurationFileKind.SegaTools, "system", "dipsw1", ConfigurationValueKind.Boolean, "局域网主机");
         Add(GameConfigurationFileKind.SegaTools, "gfx", "enable", ConfigurationValueKind.Boolean, "启用图形 Hook");
-        Add(GameConfigurationFileKind.SegaTools, "unity", "enable", ConfigurationValueKind.Boolean, "启用 Unity Hook");
-        Add(GameConfigurationFileKind.SegaTools, "unity", "targetAssembly", ConfigurationValueKind.Path, "启动前加载的 .NET DLL");
+        Add(GameConfigurationFileKind.SegaTools, "unity", "enable", ConfigurationValueKind.Boolean, "启用 Unity Hook", addable: true);
+        Add(GameConfigurationFileKind.SegaTools, "unity", "targetAssembly", ConfigurationValueKind.Path, "启动前加载的 .NET DLL", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "led15093", "enable", ConfigurationValueKind.Boolean, "启用 15093-06 灯光模拟");
-        Add(GameConfigurationFileKind.SegaTools, "aimeio", "path", ConfigurationValueKind.Path, "自定义读卡器 IO DLL");
-        Add(GameConfigurationFileKind.SegaTools, "mu3io", "path", ConfigurationValueKind.Path, "MU3IO 路径");
+        Add(GameConfigurationFileKind.SegaTools, "aimeio", "path", ConfigurationValueKind.Path, "自定义读卡器 IO DLL", addable: true);
+        Add(GameConfigurationFileKind.SegaTools, "mu3io", "path", ConfigurationValueKind.Path, "MU3IO 路径", addable: true);
         Add(GameConfigurationFileKind.SegaTools, "io4", "enable", ConfigurationValueKind.Boolean,
             "接管io4", defaultValue: "1", addable: true);
         foreach (var key in new[] { "test", "service", "coin", "mouse", "xinput", "keyboard", "left1", "left2", "left3", "leftSide", "rightSide", "right1", "right2", "right3", "leftMenu", "rightMenu" })
             Add(GameConfigurationFileKind.SegaTools, "io4", key,
                 key is "mouse" or "xinput" or "keyboard" ? ConfigurationValueKind.Boolean : ConfigurationValueKind.Text,
-                "IO4 输入映射", addable: key is "keyboard", defaultValue: key is "keyboard" ? "1" : "");
+                "IO4 输入映射", addable: key is "keyboard" or "mouse", defaultValue: key is "keyboard" ? "1" : "");
         foreach (var key in new[] { "cabLedOutputPipe", "cabLedOutputSerial", "controllerLedOutputPipe", "controllerLedOutputSerial" })
             Add(GameConfigurationFileKind.SegaTools, "led", key, ConfigurationValueKind.Text, "LED 输出通道");
         Add(GameConfigurationFileKind.SegaTools, "led", "serialPort", ConfigurationValueKind.Text, "LED 串口", defaultValue: "COM5", addable: true);

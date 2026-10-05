@@ -1,0 +1,29 @@
+.player-profiles-toolbar{display:flex;align-items:stretch;gap:12px;min-width:0;margin-top:10px}
+.player-profiles-rail{display:flex;gap:8px;flex:1;min-width:0;overflow-x:auto;padding:1px 1px 5px;scrollbar-width:thin;scroll-snap-type:x proximity}
+.player-profile-card{display:flex;align-items:stretch;flex:0 0 184px;min-width:0;border:1px solid var(--pencil-border);border-radius:8px;background:var(--pencil-subtle);scroll-snap-align:start}
+.player-profile-card.is-selected{border-color:#e86c43;background:#fff1ea}
+.player-profile-select{position:relative;display:flex;align-items:center;justify-content:center;flex:1;min-width:0;min-height:64px;padding:10px 12px;border:0;background:transparent;text-align:center;border-radius:8px;color:inherit}
+.player-profile-select>b{display:block;width:100%;min-width:0;text-align:center;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.player-profile-select .player-profile-machine-name{position:absolute;right:10px;bottom:5px;display:block;max-width:calc(100% - 20px);font-size:10px;line-height:1.4;color:var(--pencil-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.player-profile-add{flex:0 0 94px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:12px;scroll-snap-align:start}.player-profile-add>span{font-size:21px;line-height:1}
+.player-profiles-fetch{align-self:center;flex:none}.player-profiles-fetch button{white-space:nowrap}
+.player-profile-empty{font-size:12px;color:var(--pencil-muted);align-self:center;padding:4px 10px}
+.player-profile-editor form{display:flex;flex-direction:column;gap:16px}
+.player-profile-field{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;font-weight:600}
+.player-profile-field input{width:100%;min-width:0;font-weight:400}
+.player-profile-picker{flex:1;min-width:0}.player-profile-picker .filter-trigger{width:100%;min-height:46px;text-align:left;gap:12px}
+.player-popover[data-player-popover-parent]{z-index:31}
+.player-profile-picker-menu{padding:8px}
+.player-profile-picker-menu .filter-options{max-height:200px;overflow:auto}
+.player-profile-picker-menu .filter-options button{min-height:42px;padding:8px;gap:8px;text-align:left}
+.player-profile-picker-menu .player-add-option{margin-top:4px;border-top:1px solid var(--pencil-border);border-radius:0}
+.player-profile-machine-info{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--pencil-muted);font-weight:400}.player-profile-machine-info>span{min-width:0;overflow-wrap:anywhere}.player-profile-machine-info button{font-size:11px;flex:none;padding:4px 7px}
+.player-profile-inline-card{display:flex;flex-direction:column;gap:10px;margin-top:10px;padding-top:10px;border-top:1px solid var(--pencil-border)}.player-profile-inline-card-actions{display:flex;justify-content:flex-end;gap:8px}.player-profile-inline-card>.player-save-feedback{margin:0}
+.player-profile-editor .player-profile-note{margin:0;font-size:11px;line-height:1.6}
+.player-profile-actions{display:flex;justify-content:flex-end;gap:8px;flex:none}
+.player-profile-editor .player-profile-actions{position:sticky;bottom:0;z-index:1;padding-top:10px;border-top:1px solid var(--pencil-border);background:#fff}
+.player-profile-delete{display:flex;align-items:center;gap:8px;margin-right:auto;flex:none}
+.dark .player-profile-card{background:#222c38}.dark .player-profile-card.is-selected{background:#3c2924;border-color:#bc714f}
+.dark .player-profile-editor .player-profile-actions{background:#1d2530}
+@media(max-width:700px){.player-profiles-toolbar{gap:7px}.player-profile-card{flex-basis:166px}}
+@media(max-height:800px){.player-profile-select{padding:8px 10px;min-height:58px}.player-profile-editor form{gap:12px}}

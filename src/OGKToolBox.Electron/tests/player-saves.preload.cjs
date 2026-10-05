@@ -9,7 +9,10 @@ const originalSection = window.ogk.librarySection;
 window.ogk.librarySection = async (root, kind, requestId) => kind === 'music' ? structuredClone(music) : originalSection(root, kind, requestId);
 const capture = { enabled: false, installed: false, status: '', sessions: 0, canRefresh: false };
 const saves = [];
-const profiles = { cards: [{ id: 'card-a', accessCode: '12345678901234567890' }], server: { id: 'server-a', label: 'server-a.invalid' }, defaultCardId: 'card-a', configurationError: '' };
+const profiles = { cards: [{ id: 'card-a', accessCode: '12345678901234567890' }], server: { id: 'server-a', label: 'server-a.invalid' }, defaultCardId: 'card-a', configurationError: '', machines: [{ id: 'machine-1', name: '机台 1', values: {dns:{},netenv:{},keychip:{}},server: {id:'server-a',label:'server-a.invalid'},keychipHint:'A123 · ••••••••'}],players:[{id:'player-card-a',name:'玩家 1',machineId:'machine-1',cardId:'card-a'}],selectedPlayerId:'player-card-a',activeMachineId:'machine-1' };
+window.ogk.machineProfiles = async () => ({machines:structuredClone(profiles.machines),cards:structuredClone(profiles.cards),activeMachineId:'machine-1',virtualCard:{path:'fixture-card.txt',cardId:'card-a',accessCode:'12345678901234567890'},configurationError:''});
+window.ogk.savePlayerProfile = async (_root, request) => { const id=request.id||'player-'+request.cardId;const row={...request,id};const index=profiles.players.findIndex(player=>player.id===id);if(index<0)profiles.players.push(row);else profiles.players[index]=row;return id; };
+window.ogk.selectPlayerProfile = async (_root, id) => { const player=profiles.players.find(player=>player.id===id);if(!player)throw new Error('player unavailable');profiles.selectedPlayerId=id;profiles.defaultCardId=player.cardId;profiles.server=profiles.machines.find(machine=>machine.id===player.machineId).server; };
 let directId = 0;
 window.ogk.addPlayerCard = async (_root, code) => {
   const existing = profiles.cards.find(card => card.accessCode === code); if (existing) return existing.id;
@@ -32,9 +35,12 @@ window.ogk.fetchConfiguredPlayerSave = async (_root, cardId, serverId) => {
   saves.unshift(save); return save;
 };
 window.ogk.playerSaves = async () => { if (readError) throw new Error('fixture read failure'); return { saves: structuredClone(saves), capture: { ...capture }, profiles: structuredClone(profiles) }; };
-window.ogk.importPlayerSave = async (_root, serverId) => {
+window.ogk.importPlayerSave = async (_root, _serverId, playerId) => {
   if (fail) throw new Error('文件不是有效的 JSON，原有存档未改动。');
-  const save = { id: 'fixture-json', serverId, scope: { serverId, cardId: 'card-2' }, source: 'json', playerName: '测试玩家', newPlayerRating: 16543, updatedAt: '2026-10-01T12:00:00Z', scores: [
+  const player=profiles.players.find(player=>player.id===playerId),serverId=profiles.machines.find(machine=>machine.id===player?.machineId)?.server?.id;
+  if(!player||!serverId)throw new Error('import player unavailable');
+  window.__playerSaveTest.importTarget=playerId;
+  const save = { id: 'fixture-json', serverId, scope: { serverId, cardId: player.cardId }, source: 'json', playerName: '测试玩家', newPlayerRating: 16543, updatedAt: '2026-10-01T12:00:00Z', scores: [
       { musicId:101,difficulty:2,techScore:841927,fullCombo:false,fullBell:false,allBreak:false },
       { musicId:101,difficulty:3,techScore:1000000,platinumScoreStar:6,platinumScore:1980,fullCombo:true,fullBell:false,allBreak:false },
       { musicId:202,difficulty:2,techScore:950000,platinumScore:1960,fullCombo:true,fullBell:false,allBreak:false },
@@ -54,7 +60,14 @@ window.ogk.importPlayerSave = async (_root, serverId) => {
   ] };
   saves.unshift(save); return save;
 };
-window.ogk.setPlayerCapture = async (_root, enabled) => { capture.enabled = enabled; capture.installed = true; return { ...capture }; };
+let captureMode = '', releaseCapture;
+const captureCalls = [];
+window.ogk.setPlayerCapture = async (_root, enabled) => {
+  captureCalls.push({ root: _root, enabled });
+  if (captureMode === 'error') throw new Error('请先退出游戏，再安装采集模块。');
+  if (captureMode === 'wait') await new Promise(resolve => { releaseCapture = resolve; });
+  capture.enabled = enabled; capture.installed = true; capture.updateAvailable = false; return { ...capture };
+};
 window.ogk.refreshPlayerSave = async (_root, id, cardId, serverId) => {
   const original = saves.find(save => save.id === id && save.scope?.cardId === cardId && save.scope?.serverId === serverId);
   window.__playerSaveTest.lastSession = original?.sessionId;
@@ -69,17 +82,19 @@ window.ogk.deletePlayerSaves = async (_root, ids, scope) => {
   for (const id of ids) { const index = saves.findIndex(save => save.id === id); if (index >= 0) saves.splice(index, 1); }
 };
 window.__playerSaveTest = {
+  captureCalls: () => structuredClone(captureCalls), capture: () => ({ ...capture }),
+  captureMode: value => { captureMode = value; }, completeCapture: () => { captureMode = ''; releaseCapture?.(); releaseCapture = undefined; },
   deleteCalls: 0, deleteFailure: false,
   complete: () => completePending?.(),
   profiles: () => structuredClone(profiles),
-  server: id => { profiles.server = { id, label: `${id}.invalid` }; },
+  server: id => { profiles.server = { id, label: `${id}.invalid` }; profiles.machines[0].server=profiles.server; },
   addOtherImport: () => saves.unshift({ id:'other-import',serverId:'server-b',source:'json',playerName:'另一服务器导入',updatedAt:'2026-10-01T10:00:00Z',scores:[],collections:[],warnings:[] }),
   addOtherServer: () => saves.unshift({ id: 'other-server', scope: { cardId: 'card-2', serverId: 'server-b' }, source: 'direct', playerName: '另一服务器玩家', updatedAt: '2026-10-01T09:00:00Z', scores: [{musicId:101,difficulty:3,techScore:999999}],collections:[],warnings:[] }),
   removeSelected: id => saves.splice(saves.findIndex(save=>save.id===id),1),
   readError: value => { readError = value; },
   updateSelectedScore: () => { saves.find(save => save.id === 'fixture-json').scores.find(score => score.musicId === 101 && score.difficulty === 3).techScore = 1000010; },
   fail: () => { fail = true; }, status: value => { capture.status = value; }, mode: value => { connectionMode = value; },
-  addCapture: () => { saves.unshift({ id: 'fixture-game', scope: { cardId: 'card-2', serverId: 'server-a' }, source: 'game', sessionId: 'fixture-session', playerName: '采集测试玩家', updatedAt: '2026-10-01T08:00:00Z', scores: [{ musicId: 202, difficulty: 2, techScore: 1004000, fullCombo: true, fullBell: true, allBreak: false }], collections: [], warnings: [] }); capture.canRefresh = true; capture.sessions = 1; }
+  addCapture: () => { saves.unshift({ id: 'fixture-game', scope: { cardId: 'card-2', serverId: 'server-a' }, source: 'game', sessionId: 'a'.repeat(32), latestCapture: { id: `game-${'a'.repeat(32)}`, at: '2026-10-04T08:00:00Z' }, playerName: '采集测试玩家', updatedAt: '2026-10-04T08:00:00Z', scores: [{ musicId: 202, difficulty: 2, techScore: 1004000, fullCombo: true, fullBell: true, allBreak: false }], collections: [], warnings: [] }); capture.canRefresh = true; capture.sessions = 1; }
 };
 
 if (process.env.OGK_RATING_UI_TEST === '1') {

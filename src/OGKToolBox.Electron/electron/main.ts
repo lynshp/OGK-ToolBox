@@ -1,4 +1,5 @@
-import { importManagedPlayerSave, deleteManagedPlayerSaves, playerProfiles, scopedPlayerSaves, addPlayerCard, reorderPlayerCards, bindPlayerSave, refreshManagedPlayerSave, fetchManagedPlayerSave } from "./player-profiles";
+import { queueManagedPlayerEdit, cancelManagedPlayerEdit, managedPlayerEditStatus } from "./player-profiles";
+import { importManagedPlayerSave, deleteManagedPlayerSaves, playerProfiles, scopedPlayerSaves, addPlayerCard, reorderPlayerCards, bindPlayerSave, refreshManagedPlayerSave, fetchManagedPlayerSave, mergePlayerBest } from "./player-profiles";
 import { app, BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -17,6 +18,11 @@ import { readSave, saveDirectory } from "./player-save";
 import { captureState, syncCaptures, setCapture } from "./player-capture";
 import { playerConnectionDefaults } from "./player-bootstrap";
 import { playerRatingCatalog } from "./player-rating-catalog";
+import { savePlayerScoreImage } from "./player-score-image";
+import { uploadPlayerBest } from "./player-best-upload";
+import { getPlayerUploadPolicy } from "./player-upload-policy";
+import { getManagedPlayerSaveEditor, saveManagedPlayerSaveEditor } from "./player-profiles";
+import { machineProfiles, saveMachineProfile, activateMachineProfile, savePlayerProfile, deleteMachineProfile, deletePlayerProfile, selectPlayerProfile, setVirtualPlayerCard, machineBackups, restoreMachineBackup } from "./machine-profiles";
 
 type Installation = { installationId: string; displayName: string; gameRoot: string };
 type Page<T> = { items: T[]; total: number; offset: number; limit: number };
@@ -38,7 +44,7 @@ type ScanStatus = {
   error?: string;
 };
 type Token = { type: "music" | "card" | "resource"; id: string; visual?: string };
-type GameLaunchOptions = { width: number; height: number; fullscreen: boolean };
+type GameLaunchOptions = { width: number; height: number; fullscreen: boolean; fixOpenSsl: boolean };
 type ThumbnailPriority = "visible" | "prefetch";
 type ThumbnailTask = {
   key: string; priority: ThumbnailPriority; run: (signal: AbortSignal) => Promise<Buffer>;
@@ -1172,12 +1178,13 @@ function normalizeGameLaunchOptions(value?: Partial<GameLaunchOptions>): GameLau
   return {
     width: clampDimension(value?.width, 1080),
     height: clampDimension(value?.height, 1920),
-    fullscreen: value?.fullscreen !== false
+    fullscreen: value?.fullscreen !== false,
+    fixOpenSsl: value?.fixOpenSsl === true
   };
 }
 function launcherScript(options?: Partial<GameLaunchOptions>): string {
   const normalized = normalizeGameLaunchOptions(options);
-  return `@echo off\r\npushd %~dp0\r\n\r\nstart "AM Daemon" /min inject -d -k mu3hook.dll amdaemon.exe -f -c config_common.json config_server.json config_client.json\r\ninject -d -k mu3hook.dll mu3 -screen-fullscreen ${normalized.fullscreen ? 1 : 0} -popupwindow -screen-width ${normalized.width} -screen-height ${normalized.height}\r\ntaskkill /f /im amdaemon.exe > nul 2>&1\r\n\r\necho.\r\necho Game processes have terminated\r\npause\r\n`;
+  return `@echo off\r\npushd %~dp0\r\n\r\n${normalized.fixOpenSsl ? "set OPENSSL_ia32cap=~0x200000200000000\r\n" : ""}start "AM Daemon" /min inject -d -k mu3hook.dll amdaemon.exe -f -c config_common.json config_server.json config_client.json\r\ninject -d -k mu3hook.dll mu3 -screen-fullscreen ${normalized.fullscreen ? 1 : 0} -popupwindow -screen-width ${normalized.width} -screen-height ${normalized.height}\r\ntaskkill /f /im amdaemon.exe > nul 2>&1\r\n\r\necho.\r\necho Game processes have terminated\r\npause\r\n`;
 }
 async function prepareGameLauncher(root: string, options?: Partial<GameLaunchOptions>): Promise<{ launcher: string; fileName: string }> {
   const requestedRoot = String(root ?? "").trim();
@@ -1245,31 +1252,78 @@ async function requireGameStopped(): Promise<void> {
 }
 ipcMain.handle("game:running-processes", () => runningGameProcesses());
 const playerRefreshes = new Map<number, AbortController>();
+const playerSelectionVersions = new Map<number, number>();
+ipcMain.handle("machine-profiles:list", async (_event, requestedRoot: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  return machineProfiles(root, (await playerProfiles(root)).cards);
+});
+ipcMain.handle("machine-profiles:save", async (event, requestedRoot: string, request: import("../src/machine-profile-models").SaveMachineProfileRequest) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  playerRefreshes.get(event.sender.id)?.abort();
+  return saveMachineProfile(root, (await playerProfiles(root)).cards, request, requireGameStopped);
+});
+ipcMain.handle("machine-profiles:activate", async (event, requestedRoot: string, id: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  playerRefreshes.get(event.sender.id)?.abort();
+  return activateMachineProfile(root, (await playerProfiles(root)).cards, id, requireGameStopped);
+});
+ipcMain.handle("machine-profiles:set-card", async (_event, requestedRoot: string, cardId: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  return setVirtualPlayerCard(root, (await playerProfiles(root)).cards, cardId, requireGameStopped);
+});
+ipcMain.handle("machine-profiles:delete", async (_event, requestedRoot: string, id: string) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  return deleteMachineProfile(root, (await playerProfiles(root)).cards, id);
+});
+ipcMain.handle("player-profiles:delete", async (event, requestedRoot: string, id: string) => {
+  const sender = event.sender.id;
+  playerSelectionVersions.set(sender, (playerSelectionVersions.get(sender) ?? 0) + 1);
+  playerRefreshes.get(sender)?.abort();
+  const root = await resolveGameDirectory(requestedRoot);
+  return deletePlayerProfile(root, (await playerProfiles(root)).cards, id);
+});
+ipcMain.handle("player-profiles:save", async (event, requestedRoot: string, request: import("../src/machine-profile-models").SavePlayerProfileRequest) => {
+  const root = await resolveGameDirectory(requestedRoot);
+  playerRefreshes.get(event.sender.id)?.abort();
+  return savePlayerProfile(root, (await playerProfiles(root)).cards, request);
+});
+ipcMain.handle("player-profiles:select", async (event, requestedRoot: string, id: string) => {
+  const sender = event.sender.id, version = (playerSelectionVersions.get(sender) ?? 0) + 1;
+  playerSelectionVersions.set(sender, version);
+  const root = await resolveGameDirectory(requestedRoot);
+  playerRefreshes.get(event.sender.id)?.abort();
+  return selectPlayerProfile(root, (await playerProfiles(root)).cards, id, () => !event.sender.isDestroyed() && playerSelectionVersions.get(sender) === version);
+});
+function capturePluginPath() {
+  return app.isPackaged ? path.join(process.resourcesPath, "player-capture", "OGKToolBox.PlayerCapture.dll") : path.resolve(__dirname, "../../resources/player-capture/OGKToolBox.PlayerCapture.dll");
+}
 ipcMain.handle("player-saves:list", async (_event, requestedRoot: string) => {
   const root = await resolveGameDirectory(requestedRoot);
-  const capture = await captureState(root);
+  const capture = await captureState(root, capturePluginPath());
   try { await syncCaptures(root); }
   catch (error) { capture.status = `read-error: ${(error as Error).message}`; }
   return { saves: await scopedPlayerSaves(root), capture, profiles: await playerProfiles(root) };
 });
-ipcMain.handle("player-saves:import", async (_event, requestedRoot: string, serverId: string | null) => {
+ipcMain.handle("player-saves:import", async (_event, requestedRoot: string, serverId: string | null, playerId?: string) => {
   const root = await resolveGameDirectory(requestedRoot);
+  const destinationPlayerId = playerId ?? (await playerProfiles(root)).selectedPlayerId ?? "";
   const choice = await dialog.showOpenDialog({ title: "导入游玩数据 JSON", properties: ["openFile"], filters: [{ name: "JSON 存档", extensions: ["json"] }] });
   if (choice.canceled || !choice.filePaths[0]) return null;
-  return importManagedPlayerSave(root, await readSave(choice.filePaths[0]), serverId);
+  return importManagedPlayerSave(root, await readSave(choice.filePaths[0]), serverId, destinationPlayerId);
 });
 ipcMain.handle("player-saves:capture", async (_event, requestedRoot: string, enabled: boolean) => {
   if (typeof enabled !== "boolean") throw new Error("采集设置无效。");
   if (enabled && (await runningGameProcesses()).length) throw new Error("请先退出游戏，再安装或更新采集模块。");
   const root = await resolveGameDirectory(requestedRoot);
-  const plugin = app.isPackaged ? path.join(process.resourcesPath, "player-capture", "OGKToolBox.PlayerCapture.dll") : path.resolve(__dirname, "../../resources/player-capture/OGKToolBox.PlayerCapture.dll");
-  return setCapture(root, enabled, plugin);
+  return setCapture(root, enabled, capturePluginPath());
 });
 async function withPlayerRefresh<T>(event: Electron.IpcMainInvokeEvent, requestedRoot: string, action: (root: string, signal: AbortSignal) => Promise<T>) {
   if ((await runningGameProcesses()).length) throw new Error("请先退出游戏再使用游戏外刷新，或等待随游戏自动采集。");
   if (playerRefreshes.has(event.sender.id)) throw new Error("正在刷新存档。");
   const root = await resolveGameDirectory(requestedRoot), abort = new AbortController();
   const senderId = event.sender.id;
+  if (event.sender.isDestroyed()) throw new Error("操作已取消。");
+  if (playerRefreshes.has(senderId)) throw new Error("正在处理存档，请稍候。");
   playerRefreshes.set(senderId, abort);
   const cancel = () => abort.abort(); event.sender.once("destroyed", cancel);
   const deadline = setTimeout(cancel, 180000);
@@ -1278,11 +1332,26 @@ async function withPlayerRefresh<T>(event: Electron.IpcMainInvokeEvent, requeste
 }
 ipcMain.handle("player-saves:default-card", async (_event, requestedRoot: string) => (await playerConnectionDefaults(await resolveGameDirectory(requestedRoot))).accessCode);
 ipcMain.handle("player-saves:fetch-configured", (event, requestedRoot: string, cardId: string, serverId: string) => withPlayerRefresh(event, requestedRoot, (root, signal) => fetchManagedPlayerSave(root, cardId, serverId, signal)));
+ipcMain.handle("player-saves:merge-best", async (_event, requestedRoot: string, targetId: string, sourceIds: string[], cardId: string, serverId: string) => mergePlayerBest(await resolveGameDirectory(requestedRoot), targetId, sourceIds, cardId, serverId));
+ipcMain.handle("player-saves:upload-best", async (event, requestedRoot: string, saveId: string, cardId: string, serverId: string) => {
+  if ((await runningGameProcesses()).length) throw new Error("请先退出游戏，再上传最佳成绩。");
+  return withPlayerRefresh(event, requestedRoot, (root, signal) => uploadPlayerBest(root, saveId, cardId, serverId, signal));
+});
+ipcMain.handle("player-saves:editor", async (_event, requestedRoot: string, saveId: string, playerId: string) => getManagedPlayerSaveEditor(await resolveGameDirectory(requestedRoot), saveId, playerId));
+ipcMain.handle("player-saves:upload-policy", async (_event, requestedRoot: string, cardId: string, serverId: string) => getPlayerUploadPolicy(await resolveGameDirectory(requestedRoot), cardId, serverId));
+ipcMain.handle("player-saves:edit", async (_event, requestedRoot: string, saveId: string, playerId: string, patch: import("../src/player-save-editor-models").PlayerSaveEditorPatch) => saveManagedPlayerSaveEditor(await resolveGameDirectory(requestedRoot), saveId, playerId, patch));
+ipcMain.handle("player-saves:edit-status", async (_event, requestedRoot: string, saveId: string, playerId: string) => managedPlayerEditStatus(await resolveGameDirectory(requestedRoot), saveId, playerId));
+ipcMain.handle("player-saves:queue-edit", async (_event, requestedRoot: string, saveId: string, playerId: string, patch: import("../src/player-save-editor-models").PlayerSaveEditorPatch) => queueManagedPlayerEdit(await resolveGameDirectory(requestedRoot), saveId, playerId, patch));
+ipcMain.handle("player-saves:cancel-edit", async (_event, requestedRoot: string, saveId: string, playerId: string, id: string, discardActive: boolean) => {
+  if (typeof discardActive !== "boolean") throw Error("待办操作无效。");
+  if (discardActive && (await runningGameProcesses()).length) throw Error("请先退出游戏并核对存档，再清除已领取的待办。");
+  return cancelManagedPlayerEdit(await resolveGameDirectory(requestedRoot), saveId, playerId, id, discardActive);
+});
 ipcMain.handle("player-saves:add-card", async (_event, requestedRoot: string, code: string) => addPlayerCard(await resolveGameDirectory(requestedRoot), code));
 ipcMain.handle("player-saves:reorder-cards", async (_event, requestedRoot: string, ids: string[]) => reorderPlayerCards(await resolveGameDirectory(requestedRoot), ids));
 ipcMain.handle("player-saves:bind", async (_event, requestedRoot: string, saveId: string, cardId: string, serverId: string) => bindPlayerSave(await resolveGameDirectory(requestedRoot), saveId, cardId, serverId));
 ipcMain.handle("player-saves:refresh", (event, requestedRoot: string, saveId: string, cardId: string, serverId: string) => withPlayerRefresh(event, requestedRoot, (root, signal) => refreshManagedPlayerSave(root, saveId, cardId, serverId, signal)));
-ipcMain.handle("player-saves:delete", async (_event, requestedRoot: string, ids: string[], scope: { serverId: string; cardId?: string } | null) => deleteManagedPlayerSaves(await resolveGameDirectory(requestedRoot), ids, scope));
+ipcMain.handle("player-saves:delete", async (_event, requestedRoot: string, ids: string[], scope: import("./player-profiles").PlayerSaveDeleteScope) => deleteManagedPlayerSaves(await resolveGameDirectory(requestedRoot), ids, scope));
 ipcMain.on("player-saves:cancel", event => playerRefreshes.get(event.sender.id)?.abort());
 ipcMain.handle("player-saves:export", async (_event, requestedRoot: string, id: string) => {
   const root = await resolveGameDirectory(requestedRoot);
@@ -1292,6 +1361,12 @@ ipcMain.handle("player-saves:export", async (_event, requestedRoot: string, id: 
   if (choice.canceled || !choice.filePath) return false;
   await fs.writeFile(choice.filePath, JSON.stringify(data.raw, null, 2), "utf8"); return true;
 });
+ipcMain.handle("player-saves:save-score-image", (event, request: unknown) => savePlayerScoreImage(request, async fileName => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const options = { title: "保存 BEST 110 成绩图", defaultPath: fileName, filters: [{ name: "PNG 成绩图", extensions: ["png"] }] };
+  const choice = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+  return choice.canceled ? null : choice.filePath ?? null;
+}));
 ipcMain.handle("game:stop-processes", async () => {
   const running = await runningGameProcesses();
   await Promise.all(running.map(name => commandOutput("taskkill.exe", ["/F", "/IM", `${name}.exe`])));
@@ -1376,14 +1451,15 @@ ipcMain.handle("hdd-setup:open-portal", (_event, service: string) => {
 ipcMain.handle("configuration:segatools-backups", async (_event, root: string) => {
   const registered = await installation(root);
   const values = await backend.request<any[]>(`/api/installations/${encodeURIComponent(registered.installationId)}/configuration/SegaTools/backups`);
-  return values.map(item => ({ ...item, name: item.id }));
+  return [...values.map(item => ({ ...item, name: item.id })), ...await machineBackups(await resolveGameDirectory(root))].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 ipcMain.handle("configuration:segatools-backup", async (_event, root: string) => {
   const registered = await installation(root);
   const values = await backend.request<any[]>(`/api/installations/${encodeURIComponent(registered.installationId)}/configuration/SegaTools/backups`);
-  return values.map(item => ({ ...item, name: item.id }));
+  return [...values.map(item => ({ ...item, name: item.id })), ...await machineBackups(await resolveGameDirectory(root))].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 });
 ipcMain.handle("configuration:restore-segatools-backup", async (_event, request: any) => {
+  if (typeof request?.name === "string" && request.name.startsWith("machine-")) return restoreMachineBackup(await resolveGameDirectory(request.gameRoot), request.name, requireGameStopped);
   const registered = await installation(request.gameRoot);
   return backend.request(`/api/installations/${encodeURIComponent(registered.installationId)}/configuration/backups/${encodeURIComponent(request.name)}/restore`, { method: "POST" });
 });

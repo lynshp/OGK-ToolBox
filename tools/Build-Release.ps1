@@ -27,6 +27,23 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 } finally { Pop-Location }
 $resources = Join-Path $repo "artifacts/electron/win-unpacked/resources"
+$publishedApi = Join-Path $repo "src/OGKToolBox.Api/bin/Release/net8.0/publish"
+$packagedApi = Join-Path $resources "api"
+$excludedApiSymbols = @("OGKToolBox.Api.pdb", "OGKToolBox.Application.pdb", "OGKToolBox.Core.pdb", "OGKToolBox.Infrastructure.pdb")
+$publishedFiles = Get-ChildItem -LiteralPath $publishedApi -File -Recurse |
+    Where-Object { $_.Name -notin $excludedApiSymbols } |
+    ForEach-Object { $_.FullName.Substring($publishedApi.Length).TrimStart('\') }
+$packagedFiles = Get-ChildItem -LiteralPath $packagedApi -File -Recurse |
+    ForEach-Object { $_.FullName.Substring($packagedApi.Length).TrimStart('\') }
+$packagedSymbols = @($packagedFiles | Where-Object { [IO.Path]::GetFileName($_) -in $excludedApiSymbols })
+if ($packagedSymbols.Count -gt 0) {
+    throw "The installer contains excluded API debug symbols: $($packagedSymbols -join ', ')"
+}
+$missingFiles = @($publishedFiles | Where-Object { $_ -notin $packagedFiles })
+if ($missingFiles.Count -gt 0) {
+    throw "The installer API Sidecar is incomplete: $($missingFiles -join ', ')"
+}
+
 foreach ($name in @("OGKToolBox.Api.exe", "coreclr.dll", "hostfxr.dll", "e_sqlite3.dll")) {
     if (-not (Test-Path (Join-Path $resources "api/$name"))) { throw "Missing packaged API file: $name" }
 }

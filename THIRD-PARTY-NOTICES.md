@@ -11,6 +11,7 @@ third-party files or proprietary controller binaries merely because they are sto
 | `node-hid` / `hidapi` | MIT/X11 and hidapi terms; license files are distributed with the packaged npm dependency. |
 | BepInEx, Harmony, Mono.Cecil, MonoMod and other bundled dependencies | Retain their respective upstream licenses, copyright notices and attribution requirements. |
 | Bundled game integration files, ICF, images and audio | Third-party works, excluded from the root MIT grant. The maintainer has confirmed redistribution of the supplied assets; this is not a grant to modify their third-party licenses. |
+| Resource icons under `src/OGKToolBox.Electron/public/resource-icons` | Game artwork used to identify inventory items; third-party works excluded from the root MIT grant. |
 
 The proprietary controller and game IO binaries may be used with OGKToolBox, including local development
 and testing. Other use or redistribution requires permission from their copyright holder. Independent

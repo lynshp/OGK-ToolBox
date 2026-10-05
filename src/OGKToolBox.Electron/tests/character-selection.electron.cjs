@@ -138,6 +138,9 @@ if (!process.versions.electron) {
       await waitFor("document.querySelectorAll('.launch-settings-popover input').length === 2", "launch settings");
       const inputValue = index => evaluate(`document.querySelectorAll('.launch-settings-popover input')[${index}].value`);
       const storedOptions = () => evaluate("JSON.parse(localStorage.getItem('ogk-toolbox.launch-options.v1'))");
+      const opensslSwitch = "document.querySelector('[aria-labelledby=openssl-fix-label]')";
+      assert.equal(await evaluate(`${opensslSwitch}.getAttribute('aria-checked')`), "false", "OpenSSL fix defaults off for existing preferences.");
+      assert.equal((await storedOptions()).fixOpenSsl, false);
       async function key(keyCode, modifiers = []) {
         win.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
         win.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
@@ -191,9 +194,39 @@ if (!process.versions.electron) {
       await type("1600");
       await evaluate("document.querySelector('.launch-game-card').click()");
       await waitFor("window.__characterSelectionTest.state().launches.length === 1", "the in-memory launch");
-      assert.deepEqual((await control("state()")).launches[0].options, { width: 1600, height: 1920, fullscreen: true }, "Launching before blur must use the current draft.");
+      assert.deepEqual((await control("state()")).launches[0].options, { width: 1600, height: 1920, fullscreen: true, fixOpenSsl: false }, "Launching before blur must use the current draft.");
+      await evaluate(`${opensslSwitch}.focus()`);
+      await key("Space");
+      assert.equal(await evaluate(`${opensslSwitch}.getAttribute('aria-checked')`), "true");
+      assert.equal((await storedOptions()).fixOpenSsl, true);
+      assert.match(await evaluate("document.querySelector('#openssl-fix-hint').textContent"), /Intel Core.*10/);
+      await evaluate("document.querySelector('.launch-game-card').click()");
+      await waitFor("window.__characterSelectionTest.state().launches.length === 2", "launch with OpenSSL fix");
+      assert.deepEqual((await control("state()")).launches[1].options, { width: 1600, height: 1920, fullscreen: true, fixOpenSsl: true });
+      await new Promise(resolve => { win.webContents.once("did-finish-load", resolve); win.webContents.reload(); });
+      await waitFor("!!document.querySelector('.launch-settings-trigger')", "Home after reload");
+      await waitFor("document.querySelector('.app').classList.contains('boot-ready') && getComputedStyle(document.querySelector('.boot-loading-screen')).visibility === 'hidden'", "startup overlay to finish");
+      await evaluate("document.querySelector('.launch-settings-trigger').click()");
+      await waitFor(`!!${opensslSwitch}`, "OpenSSL switch after reload");
+      assert.equal(await evaluate(`${opensslSwitch}.getAttribute('aria-checked')`), "true", "OpenSSL preference survives reload.");
+      if (process.env.OGK_LAUNCH_TEST_SCREENSHOT) {
+        const directory = path.resolve(process.env.OGK_LAUNCH_TEST_SCREENSHOT);
+        fs.mkdirSync(directory, { recursive: true });
+        for (const dark of [false, true]) {
+          await evaluate(`document.querySelector('.app').classList.toggle('dark', ${dark})`);
+          win.webContents.invalidate();
+          await evaluate("new Promise(resolve => setTimeout(resolve, 350))");
+          fs.writeFileSync(path.join(directory, `launch-${dark ? 'dark' : 'light'}.png`),
+            (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
+        }
+      }
+      await settle();
+      await evaluate(`${opensslSwitch}.focus()`);
+      await key("Space");
+      assert.equal((await storedOptions()).fixOpenSsl, false, "Keyboard can turn OpenSSL fix back off.");
       assert.deepEqual(errors, [], "The real renderer must remain free of errors.");
       console.log("PASS: resolution inputs support clear and incremental keyboard entry, blur/Enter commits, bounds, empty restoration, and launch while editing.");
+      console.log("PASS: OpenSSL default, keyboard toggle, recommendation, launch payload and preference persistence.");
     } finally {
       win.destroy();
     }

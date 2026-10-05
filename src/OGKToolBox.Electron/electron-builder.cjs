@@ -34,7 +34,7 @@ const config = {
   ],
   extraResources: [
     { from: "resources/player-capture", to: "player-capture" },
-    { from: "../OGKToolBox.Api/bin/Release/net8.0/publish", to: "api" },
+    { from: "../OGKToolBox.Api/bin/Release/net8.0/publish", to: "api", filter: ["**/*", "!**/OGKToolBox.Api.pdb", "!**/OGKToolBox.Application.pdb", "!**/OGKToolBox.Core.pdb", "!**/OGKToolBox.Infrastructure.pdb"] },
     { from: "resources/controller", to: "controller", filter: ["OGKToolBox.ControllerHost.exe", "module.json", "artifact.json", "LICENSE.txt", "README.md"] },
     { from: "assets/chart", to: "chart" },
     { from: "assets/fastgithub", to: "fastgithub" },

@@ -483,7 +483,9 @@ aside nav button i {
 .launch-settings-title small { color: #748193; font-size: 10px; }
 .launch-settings-popover label { display: grid; grid-template-columns: 1fr 92px; align-items: center; gap: 10px; color: #526073; font-size: 11px; font-weight: 600; }
 .launch-settings-popover input { width: 92px; height: 30px; padding: 0 8px; font-size: 12px; }
-.fullscreen-setting { display: flex; align-items: center; justify-content: space-between; padding-top: 2px; color: #526073; font-size: 11px; font-weight: 600; }
+.launch-toggle-setting { display: flex; align-items: center; justify-content: space-between; padding-top: 2px; color: #526073; font-size: 11px; font-weight: 600; }
+.launch-toggle-option { display: grid; gap: 6px; }
+.launch-setting-hint { color: #748193; font-size: 10px; line-height: 1.5; }
 .setting-switch { position: relative; width: 36px !important; min-height: 20px !important; height: 20px; padding: 0 !important; border: 1px solid #cbd3de; border-radius: 10px; background: #dce2e9; box-shadow: none; }
 .setting-switch i { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform 160ms ease; }
 .setting-switch.is-on { border-color: #d94c1b; background: #d94c1b; }
@@ -492,8 +494,8 @@ aside nav button i {
 .dark .launch-settings-trigger:hover:not(:disabled) { background: #344354; }
 .dark .launch-settings-popover { border-color: #455468; background: #1d2530; box-shadow: 0 12px 28px #0006; }
 .dark .launch-settings-title { border-color: #344354; }
-.dark .launch-settings-title b,.dark .fullscreen-setting,.dark .launch-settings-popover label { color: #ebeff5; }
-.dark .launch-settings-title small { color: #9eabb9; }
+.dark .launch-settings-title b,.dark .launch-toggle-setting,.dark .launch-settings-popover label { color: #ebeff5; }
+.dark .launch-settings-title small,.dark .launch-setting-hint { color: #9eabb9; }
 .dark .attention-card { border-color: #344354; background: #26313f; }
 .dark .attention-card strong { color: #d7e0ea; }
 

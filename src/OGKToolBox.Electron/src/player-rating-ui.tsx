@@ -2,9 +2,10 @@ import { BundleThumbnail } from "./bundle-thumbnail";
 import { DifficultyBadge } from "./player-score-ui";
 import { difficultyNames } from "./player-save-context";
 import type { RatingGroup } from "./player-rating";
+import type { RefObject } from "react";
 
-export function Best110({ groups, root }: { groups: RatingGroup[]; root: string }) {
-  return <div className="player-best-scroll" tabIndex={0} aria-label="BEST 110 谱面列表">
+export function Best110({ groups, root, scrollRef }: { groups: RatingGroup[]; root: string; scrollRef?: RefObject<HTMLDivElement | null> }) {
+  return <div ref={scrollRef} className="player-best-scroll" tabIndex={0} aria-label="BEST 110 谱面列表"><div className="player-best-content">
     {groups.map(group => <section className="player-best-group" key={group.id} data-rating-group={group.id} aria-label={`${group.title} ${group.limit} 张`}>
       <div className="player-best-heading"><h3>{group.title} <span>{group.limit} 张</span></h3><span>{group.entries.length} / {group.limit}<b title="按固定名额计算，并按游戏规则截断">{group.missing ? "已知 " : ""}+{(group.contribution1000 / 1000).toFixed(3)}</b></span></div>
       {group.missing > 0 && <p className="player-best-incomplete" role="status">{group.missing} 张谱面数据不完整，当前仅展示可计算成绩</p>}
@@ -20,5 +21,5 @@ export function Best110({ groups, root }: { groups: RatingGroup[]; root: string 
         </li>)}</ol>
       </> : <p className="player-best-empty">{group.missing ? "缺少计算所需的存档或谱面数据" : "暂无符合条件的成绩"}</p>}
     </section>)}
-  </div>;
+  </div></div>;
 }

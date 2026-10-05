@@ -12,17 +12,20 @@ const ts = require('typescript');
 const Module = require('node:module');
 const modules = new Map();
 function load(name) {
-  if (modules.has(name)) return modules.get(name).exports;
   const file = path.resolve(__dirname, `../electron/${name}.ts`);
+  return loadFile(file);
+}
+function loadFile(file) {
+  if (modules.has(file)) return modules.get(file).exports;
   const m = new Module(file, module); m.filename = file; m.paths = module.paths;
-  m.require = id => id.startsWith('./player-') ? load(id.slice(2)) : require(id);
-  modules.set(name, m);
+  m.require = id => id.startsWith('.') ? loadFile(path.resolve(path.dirname(file), `${id}.ts`)) : require(id);
+  modules.set(file, m);
   m._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true } }).outputText, file);
   return m.exports;
 }
 const { summarizeSave, parseSave, persistSave, listSaves, deletePlayerArchives, saveDirectory, captureWarnings } = load('player-save');
 const { captureEvents, syncCaptures, refreshFromGame, refreshFromRequests, readGameApi, captureState, setCapture } = load('player-capture');
-const { validatePlayerConnection, playerConnectionDefaults, discoverPlayerServer, lookupPlayerCard, createCardLookup, parseCardLookup, fetchPlayerFromLocalConfiguration } = load('player-bootstrap');
+const { validatePlayerConnection, playerConnectionDefaults, discoverPlayerServer, lookupPlayerCard, createCardLookup, parseCardLookup, fetchPlayerFromConfiguration } = load('player-bootstrap');
 const ownConnection = { server: 'server.invalid', keychip: 'A123-45678901234', accessCode: '12345678901234567890', version: '1.50' };
 function aimeCipher(bytes, encrypt = true) {
   const cipher = (encrypt ? crypto.createCipheriv : crypto.createDecipheriv)('aes-128-ecb', Buffer.from('Copyright(C)SEGA'), null);
@@ -65,11 +68,89 @@ test('capture status expires old heartbeats and reinstall clears obsolete status
   await setCapture(root, false, bundled);
   assert.equal((await captureState(root)).enabled, false);
 });
+test('capture status completes only the current login after all required pages arrive', async t => {
+  const root = await temporary(t), dir = saveDirectory(root);
+  const fields = { GetUserDataApi: ['userData', {}], GetUserMusicApi: ['userMusicList', []], GetUserCardApi: ['userCardList', []], GetUserCharacterApi: ['userCharacterList', []], GetUserItemApi: ['userItemList', []], GetUserOptionApi: ['userOption', {}] };
+  const events = Object.entries(fields).map(([api, [field, value]]) => ({ api, at: new Date().toISOString(), request: { userId: 42, nextIndex: 0 }, response: { userId: 42, [field]: value, ...(field.endsWith('List') ? { nextIndex: 0 } : {}) } }));
+  await capture(root, events.slice(0, -1));
+  await fsp.writeFile(path.join(dir, 'capture-status.txt'), 'capturing');
+  await fsp.writeFile(path.join(dir, 'capture-session.txt'), session);
+  assert.equal((await captureState(root)).status, 'capturing');
+  await capture(root, events);
+  assert.equal((await captureState(root)).status, 'captured');
+  events[1].response.nextIndex = 100;
+  await capture(root, events);
+  assert.equal((await captureState(root)).status, 'capturing', 'unfinished page chain stays collecting');
+  events[1].response.nextIndex = 0;
+  await capture(root, events);
+  await fsp.writeFile(path.join(dir, 'capture-session.txt'), 'b'.repeat(32));
+  assert.equal((await captureState(root)).status, 'capturing', 'previous complete login cannot complete a new login');
+  await fsp.writeFile(path.join(dir, 'capture-session.txt'), session);
+  const old = new Date(Date.now() - 60000);
+  await fsp.utimes(path.join(dir, 'capture-status.txt'), old, old);
+  assert.equal((await captureState(root)).status, 'inactive', 'completed capture does not keep a stopped game connected');
+});
+
 test('import handles BOM, nested music pages and resource counts', () => {
   const result = summarizeSave(parseSave('\ufeff' + JSON.stringify(fixture)), 'json');
   assert.equal(result.playerName, 'TEST'); assert.equal(result.scores.length, 1);
   assert.equal(result.scores[0].allBreak, true); assert.equal(result.scores[0].fullBell, false);
   assert.ok(result.collections.some(item => item.name === 'userCardList' && item.count === 1));
+});
+
+const munetFixture = () => ({
+  gameId: 'ongeki',
+  userData: { id: 42, userName: 'MuNET Fixture', newPlayerRating: 12345, jewelCount: 7 },
+  userMusicDetailList: [
+    { id: 1, userId: 42, ...score },
+    { id: 2, userId: 42, musicId: 202, level: 10, techScoreMax: 1000000, battleScoreMax: 1200000, platinumScoreMax: 3000, platinumScoreStar: 4, isFullCombo: true, isFullBell: false, isAllBreake: false, playCount: 2 }
+  ],
+  userCardList: [{ id: 3, userId: 42, cardId: 7 }],
+  userCharacterList: [{ id: 4, userId: 42, characterId: 1 }],
+  userItemList: [{ id: 5, userId: 42, itemKind: 13, itemId: 1, stock: 2 }],
+  userPlaylogList: [
+    { id: 6, userId: 42, musicId: 202, level: 10, techScore: 990000, playDate: '2026-10-03', userPlayDate: '2026-10-03 10:00:00.0' },
+    { id: 7, userId: 42, musicId: 202, level: 10, techScore: 1000000, playDate: '2026-10-03', userPlayDate: '2026-10-03 11:00:00.0' }
+  ]
+});
+
+test('flat MuNET exports normalize server LUNATIC and retain precise separate play times', () => {
+  const raw = munetFixture(), before = JSON.stringify(raw);
+  const result = summarizeSave(raw, 'json');
+  assert.equal(result.playerName, 'MuNET Fixture'); assert.equal(result.newPlayerRating, 12345);
+  assert.deepEqual(result.scores.map(s => [s.musicId, s.difficulty, s.techScore]), [[101, 3, 1005000], [202, 4, 1000000]]);
+  assert.equal(result.scores[1].platinumScore, 3000); assert.equal(result.scores[1].platinumScoreStar, 4); assert.equal(result.scores[1].fullCombo, true);
+  assert.equal(result.inventory.cardCount, 1); assert.equal(result.inventory.items.find(i => i.itemKind === 13).stock, 2);
+  assert.ok(result.collections.some(c => c.name === 'userCharacterList' && c.count === 1));
+  assert.equal(result.recentPlaysRecorded, true); assert.equal(result.recentPlays.length, 2);
+  assert.deepEqual(result.recentPlays.map(p => [p.musicId, p.difficulty, p.techScore]), [[202, 4, 1000000], [202, 4, 990000]]);
+  assert.equal(result.recentPlays[0].playedAt, new Date('2026-10-03 11:00:00.0').toISOString());
+  assert.equal(JSON.stringify(raw), before);
+});
+
+test('invalid preferred play timestamps fall back to valid legacy timestamps', () => {
+  for (const userPlayDate of ['', 'invalid', 0, -1, null]) {
+    const raw = { userPlaylogList: [{ musicId: 202, level: 10, techScore: 990000, userPlayDate, playDate: '2026-10-03T10:00:00Z' }] };
+    const result = summarizeSave(raw, 'json');
+    assert.equal(result.recentPlays.length, 1); assert.equal(result.recentPlays[0].playedAt, '2026-10-03T10:00:00.000Z');
+    assert.equal(result.recentPlays[0].difficulty, 4);
+  }
+  const result = summarizeSave({ userPlaylogList: [{ musicId: 202, userPlayDate: 'invalid', playDate: '', playedAt: '2026-10-03T11:00:00Z' }, { musicId: 203, userPlayDate: 'invalid', playDate: '' }] }, 'json');
+  assert.equal(result.recentPlays.length, 1); assert.equal(result.recentPlays[0].musicId, 202);
+});
+
+test('normalized LUNATIC combines legacy aliases locally without accepting invalid difficulties or owners', () => {
+  const raw = munetFixture();
+  raw.userMusicDetailList.push({ ...raw.userMusicDetailList[1], level: 4, techScoreMax: 990000, platinumScoreMax: 3100, isFullBell: true });
+  const result = summarizeSave(raw, 'json');
+  assert.equal(result.scores.length, 2); assert.equal(result.scores[1].techScore, 1000000);
+  assert.equal(result.scores[1].platinumScore, 3100); assert.equal(result.scores[1].fullCombo, true); assert.equal(result.scores[1].fullBell, true);
+  for (const level of [5, 11, 10.5, -1]) {
+    const invalid = munetFixture(); invalid.userMusicDetailList[1].level = level;
+    assert.throws(() => summarizeSave(invalid, 'json'), /成绩字段无效/);
+  }
+  const otherOwner = munetFixture(); otherOwner.userMusicDetailList[1].userId = 84;
+  assert.throws(() => summarizeSave(otherOwner, 'json'), /多位玩家/);
 });
 
 test('inventory preserves per-kind stock, zero/missing quantities and unique card count without adding repeated pages', () => {
@@ -184,6 +265,14 @@ test('outside-game reader follows pages, cancellation and cycles never publish p
   await assert.rejects(refreshFromGame(root, session, AbortSignal.abort()), /取消/);
   assert.equal((await listSaves(root)).length, count);
 });
+test('outside-game reads normalize LUNATIC while archived protocol responses retain level 10', async t => {
+  const root = await temporary(t), seed = event();
+  seed.response.userMusicList[0].userMusicDetailList = [{ ...score, level: 10 }];
+  const saved = await refreshFromRequests(root, [seed], undefined, async () => seed.response);
+  assert.equal(saved.source, 'direct'); assert.equal(saved.scores[0].difficulty, 4);
+  const archive = JSON.parse(await fsp.readFile(path.join(saveDirectory(root), 'archives', saved.id + '.json'), 'utf8'));
+  assert.equal(archive.raw.events[0].response.userMusicList[0].userMusicDetailList[0].level, 10);
+});
 test('item categories use encoded initial cursors; zero terminates a page stream', async t => {
   const root = await temporary(t);
   const item = kind => ({ ...event(), api: 'GetUserItemApi', request: { userId: 42, nextIndex: kind * 10000000000, maxCount: 100 }, response: { userId: 42, nextIndex: 0, itemKind: kind, userItemList: [{ itemId: 1 }] } });
@@ -207,7 +296,7 @@ test('HTTP adapter uses game POST/deflate and refuses redirects, encryption and 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
   const seed = event(); seed.connection.baseUrl = `http://127.0.0.1:${server.address().port}/ongeki/`;
   await readGameApi(seed, seed.request); assert.equal(received.method, 'POST'); assert.equal(received.url, '/ongeki/GetUserMusicApi'); assert.equal(received.body.userId, 42); assert.ok(Number.isInteger(received.body.nonce_));
-  mode = 'wrong'; await assert.rejects(readGameApi(seed, seed.request), /身份不匹配/);
+  mode = 'wrong'; await assert.rejects(readGameApi(seed, seed.request), error => error.diagnostic?.api === 'GetUserMusicApi' && error.diagnostic.stage === 'identity' && error.diagnostic.reason === 'identity_mismatch');
   mode = 'redirect'; await assert.rejects(readGameApi(seed, seed.request), /HTTP 302/);
   seed.connection.encryptVersion = 1; await assert.rejects(readGameApi(seed, seed.request), /加密/);
 });
@@ -288,7 +377,7 @@ test('Nageki blank, absent and commented keychips reach discovery and save reads
     await fsp.writeFile(path.join(root, 'segatools.ini'), ini);
     const defaults = await playerConnectionDefaults(root);
     assert.equal(defaults.keychip, '');
-    const result = await fetchPlayerFromLocalConfiguration(root, defaults.accessCode, undefined, services);
+    const result = await fetchPlayerFromConfiguration(root, defaults, undefined, services);
     assert.equal(result.scores[0].techScore, score.techScoreMax);
     assert.equal(await fsp.readFile(path.join(root, 'segatools.ini'), 'utf8'), ini);
     assert.equal(await fsp.readFile(cardFile, 'utf8'), ownConnection.accessCode);
@@ -344,7 +433,7 @@ test('fresh install discovers endpoint and resolves each own card, reads paged s
   await fsp.writeFile(path.join(root, 'segatools.ini'), localIni(input.keychip));
   await fsp.writeFile(path.join(root, 'own-card.txt'), ownConnection.accessCode);
   const defaults = await playerConnectionDefaults(root);
-  const first = await fetchPlayerFromLocalConfiguration(root, defaults.accessCode);
+  const first = await fetchPlayerFromConfiguration(root, { ...await playerConnectionDefaults(root), accessCode: defaults.accessCode });
   assert.deepEqual(first.scope, { serverId: serverIdentity(input.server, input.aimeServer).id, cardId: cardIdentity(defaults.accessCode) });
   assert.equal(first.recentPlays[0].musicId, 1); assert.equal(first.recentPlays[0].difficulty, undefined);
   assert.equal(first.scores.length, 2); assert.equal(first.source, 'direct'); assert.equal(first.sessionId, undefined);
@@ -359,13 +448,13 @@ test('fresh install discovers endpoint and resolves each own card, reads paged s
   // Each fetch rereads the game configuration, while the manual card applies only to this fetch.
   const changedIni = localIni('B456-78901234567');
   await fsp.writeFile(path.join(root, 'segatools.ini'), changedIni);
-  await fetchPlayerFromLocalConfiguration(root, '98765432109876543210');
+  await fetchPlayerFromConfiguration(root, { ...await playerConnectionDefaults(root), accessCode: '98765432109876543210' });
   assert.equal(cardRequests[1].keychip, 'B4567890123'); assert.equal(cardRequests[1].card, '98765432109876543210');
   assert.equal(allnetRequests[1].serial, 'B4567890123');
   assert.equal(await fsp.readFile(path.join(root, 'segatools.ini'), 'utf8'), changedIni);
   assert.equal(await fsp.readFile(path.join(root, 'own-card.txt'), 'utf8'), ownConnection.accessCode);
   const before = await listSaves(root), gameCount = gameRequests.length; returnUnknownCard = true;
-  await assert.rejects(fetchPlayerFromLocalConfiguration(root, defaults.accessCode), /尚未注册/);
+  await assert.rejects(fetchPlayerFromConfiguration(root, { ...await playerConnectionDefaults(root), accessCode: defaults.accessCode }), /尚未注册/);
   assert.equal(gameRequests.length, gameCount); assert.equal((await listSaves(root)).length, before.length);
   mode = 'redirect'; await assert.rejects(discoverPlayerServer(input), /HTTP 302/);
   assert.equal(cardRequests.length, 3);
@@ -381,12 +470,70 @@ test('card lookup cancellation stops an unresponsive connection', async t => {
 
 const { importManagedPlayerSave, deleteManagedPlayerSaves, playerProfiles, addPlayerCard, reorderPlayerCards, scopedPlayerSaves, requirePlayerScope, bindPlayerSave, refreshManagedPlayerSave, fetchManagedPlayerSave } = load('player-profiles');
 const { cardIdentity, serverIdentity, saveOwnerKey } = load('player-identity');
+const importMachineA = { dns: { default: 'server-a.invalid', AimeDB: '', replaceHost: '0' }, netenv: { enable: '1' }, keychip: { id: 'A123-45678901234', subnet: '192.168.162.0' } };
+const importMachineB = { dns: { default: 'server-b.invalid', AimeDB: 'card-b.invalid', replaceHost: '1' }, netenv: { enable: '0' }, keychip: { id: 'B234-56789012345', subnet: '192.168.99.0' } };
+const { importedSaveSource } = load('player-import-source');
+const { deletePlayerProfile, saveMachineProfile, savePlayerProfile, selectPlayerProfile } = load('machine-profiles');
+test('import source uses explicit snapshots over historical metadata and exposes only source drafts otherwise', () => {
+  const raw = {...munetFixture(), machine: importMachineB}; raw.userData.lastClientId = 'C3456789012';
+  const before = JSON.stringify(raw), source = importedSaveSource(raw);
+  assert.deepEqual(source.machine, importMachineB); assert.equal(source.machineComplete, true); assert.equal(JSON.stringify(raw), before);
+  const partial = {...munetFixture()}; partial.userData.lastClientId = 'C3456789012';
+  const result = importedSaveSource(partial);
+  assert.equal(result.machineComplete, false); assert.equal(result.machine.keychip.id, 'C3456789012');
+  assert.equal(result.machine.dns.default, ''); assert.equal(result.machine.keychip.subnet, '');
+  const updated = structuredClone(partial); updated.userMusicDetailList[0].techScoreMax++;
+  assert.equal(importedSaveSource(updated).machineKey, result.machineKey); assert.equal(importedSaveSource(updated).playerKey, result.playerKey);
+  updated.userData.id = 84; assert.notEqual(importedSaveSource(updated).playerKey, result.playerKey);
+});
+test('invalid or ambiguous source evidence cannot silently adopt the current machine', () => {
+  assert.throws(() => importedSaveSource({...fixture, machine:{...importMachineA, dns:{...importMachineA.dns, extra:'bad'}}}), /配置无效/);
+  assert.throws(() => importedSaveSource({...fixture, machine:importMachineA, machineSnapshot:importMachineB}), /不一致/);
+  const a = event(), b = event(); b.connection.baseUrl = 'http://different.invalid/ongeki/';
+  assert.throws(() => importedSaveSource({events:[a,b]}), /多个服务器/);
+  a.connection.baseUrl = 'http://user:secret@invalid.invalid/ongeki/';
+  assert.throws(() => importedSaveSource({events:[a]}), /地址无效/);
+});
 async function profileRoot(t) {
   const root = await temporary(t);
   await fsp.writeFile(path.join(root, 'segatools.ini'), '[dns]\ndefault=server-a.invalid\n[keychip]\nid=A123-45678901234\n[aime]\naimePath=card.txt');
   await fsp.writeFile(path.join(root, 'card.txt'), ownConnection.accessCode);
   return root;
 }
+async function clearPlayerRoster(root) {
+  const state = await playerProfiles(root);
+  for (const player of state.players) await deletePlayerProfile(root, state.cards, player.id);
+  assert.equal((await playerProfiles(root)).players.length, 0);
+  return state;
+}
+
+test('without any players MuNET import creates a pending source player and retains raw level 10 without copying current configuration', async t => {
+  const root = await profileRoot(t), state = await playerProfiles(root), dir = saveDirectory(root);
+  await clearPlayerRoster(root);
+  const files = [path.join(root, 'segatools.ini'), path.join(root, 'card.txt'), path.join(dir, 'profiles.json')];
+  const before = await Promise.all(files.map(file => fsp.readFile(file)));
+  const raw = munetFixture(); raw.userData.lastClientId = 'C3456789012'; const original = JSON.stringify(raw);
+  const saved = await importManagedPlayerSave(root, raw, state.server.id);
+  assert.equal(saved.source, 'json'); assert.equal(saved.scope, undefined); assert.equal(saved.serverId, undefined); assert.ok(saved.localPlayerId);
+  assert.equal(saved.scores[1].difficulty, 4);
+  const archive = JSON.parse(await fsp.readFile(path.join(dir, 'archives', saved.id + '.json'), 'utf8'));
+  assert.deepEqual(archive.raw, raw); assert.equal(archive.raw.userMusicDetailList[1].level, 10);
+  assert.equal(JSON.stringify(raw), original);
+  assert.deepEqual(await Promise.all(files.map(file => fsp.readFile(file))), before);
+  assert.equal((await listSaves(root)).length, 1);
+  const next = await playerProfiles(root), player = next.players.find(player => player.id === saved.localPlayerId), machine = next.machines.find(machine => machine.id === player.machineId);
+  assert.equal(next.players.length, 1); assert.equal(next.machines.length, 2); assert.equal(next.cards.length, 1);
+  assert.equal(player.name, 'MuNET Fixture'); assert.equal(player.cardId, ''); assert.deepEqual(player.importedSaveIds, [saved.id]);
+  assert.equal(machine.values.keychip.id, 'C3456789012'); assert.equal(machine.values.dns.default, ''); assert.equal(machine.values.keychip.subnet, '');
+  assert.equal(next.activeMachineId, state.activeMachineId); assert.equal(next.selectedPlayerId, player.id);
+  const repeated = await importManagedPlayerSave(root, raw, null);
+  assert.equal(repeated.localPlayerId, player.id); assert.notEqual(repeated.id, saved.id);
+  assert.equal((await playerProfiles(root)).players.length, 1);
+  const rows = await scopedPlayerSaves(root); assert.ok(rows.every(save => save.localPlayerId === player.id));
+  await assert.rejects(deleteManagedPlayerSaves(root, [saved.id], {localPlayerId: state.selectedPlayerId}), /玩家已变化/);
+  await assert.rejects(deleteManagedPlayerSaves(root, [saved.id], null), /分组已变化/);
+  await deleteManagedPlayerSaves(root, [saved.id], {localPlayerId: player.id}); assert.equal((await listSaves(root)).length, 1);
+});
 test('card profiles retain defaults, deduplicate concurrent additions and persist order without changing game configuration', async t => {
   const root = await profileRoot(t), ini = await fsp.readFile(path.join(root, 'segatools.ini'));
   const first = await playerProfiles(root); assert.equal(first.cards.length, 1); assert.equal(first.server.label, 'server-a.invalid');
@@ -473,6 +620,79 @@ test('managed refresh refuses another card, unassigned session and JSON archive 
 });
 
 const { saveFingerprint } = load('player-save-fingerprint');
+function completeSelectionCapture(at = '2030-01-01T00:00:00.000Z', sessionId = session) {
+  const responses = [
+    ['GetUserDataApi', { userData: { userName: 'TEST' } }],
+    ['GetUserMusicApi', { nextIndex: 0, userMusicList: [{ userMusicDetailList: [score] }] }],
+    ['GetUserCardApi', { nextIndex: 0, userCardList: [{ cardId: 1 }] }],
+    ['GetUserCharacterApi', { nextIndex: 0, userCharacterList: [] }],
+    ['GetUserItemApi', { nextIndex: 0, userItemList: [] }],
+    ['GetUserOptionApi', { userOption: {} }]
+  ];
+  return { sessionId, events: responses.map(([api, response]) => ({ api, at, request: { userId: 42, nextIndex: 0 }, response: { userId: 42, ...response }, connection: event().connection })) };
+}
+test('capture selection revision is published only after all required read pages complete', async t => {
+  const root = await temporary(t), id = `game-${session}`, raw = completeSelectionCapture();
+  const partial = structuredClone(raw); partial.events.pop();
+  const first = await persistSave(root, partial, 'game', id);
+  assert.equal(first.latestCapture, undefined);
+  raw.events[2].at = '2030-01-01T00:01:00.000Z';
+  const completed = await persistSave(root, raw, 'game', id);
+  assert.deepEqual(completed.latestCapture, { id, at: raw.events[2].at });
+  assert.deepEqual((await listSaves(root))[0].latestCapture, completed.latestCapture);
+  assert.equal((await listSaves(root)).length, 1);
+});
+test('a completed deduplicated Mod session retains the original archive and supplies a selection revision', async t => {
+  const root = await temporary(t), raw = completeSelectionCapture(), first = await persistSave(root, raw, 'direct', 'retained');
+  const file = path.join(saveDirectory(root), 'archives', 'retained.json'), original = JSON.parse(await fsp.readFile(file, 'utf8'));
+  const completed = await persistSave(root, raw, 'game', `game-${session}`);
+  assert.equal(completed.unchanged, true);
+  assert.deepEqual(completed.latestCapture, { id: `game-${session}`, at: raw.events[0].at });
+  for (const key of ['id', 'source', 'updatedAt', 'sequence']) assert.equal(completed[key], first[key]);
+  const stored = JSON.parse(await fsp.readFile(file, 'utf8'));
+  assert.deepEqual(stored.raw, original.raw); assert.equal(stored.fingerprint, original.fingerprint);
+  assert.equal((await listSaves(root)).length, 1);
+  const unchanged = await fsp.readFile(file);
+  await persistSave(root, raw, 'game', `game-${session}`);
+  assert.deepEqual(await fsp.readFile(file), unchanged);
+});
+test('a partial capture alias cannot mark a deduplicated complete archive as newly completed', async t => {
+  const root = await temporary(t), complete = completeSelectionCapture();
+  await persistSave(root, complete, 'direct', 'retained');
+  const partial = structuredClone(complete); partial.events[1].response.nextIndex = 100;
+  assert.equal(saveFingerprint(partial), saveFingerprint(complete));
+  const result = await persistSave(root, partial, 'game', `game-${session}`);
+  assert.equal(result.id, 'retained'); assert.equal(result.unchanged, true);
+  assert.equal(result.latestCapture, undefined);
+  assert.equal((await listSaves(root))[0].latestCapture, undefined);
+  const completed = await persistSave(root, complete, 'game', `game-${session}`);
+  assert.deepEqual(completed.latestCapture, { id: `game-${session}`, at: complete.events[0].at });
+});
+test('later completed revisions of the same archive advance once and stale session scans cannot regress them', async t => {
+  const root = await temporary(t), old = completeSelectionCapture(), id = `game-${session}`;
+  const first = await persistSave(root, old, 'game', id);
+  const newer = completeSelectionCapture('2030-01-02T00:00:00.000Z');
+  const next = await persistSave(root, newer, 'game', id);
+  assert.equal(next.id, first.id); assert.equal(next.sequence, first.sequence); assert.equal(next.updatedAt, first.updatedAt);
+  assert.deepEqual(next.latestCapture, { id, at: newer.events[0].at });
+  const file = path.join(saveDirectory(root), 'archives', `${id}.json`), before = await fsp.readFile(file);
+  await persistSave(root, old, 'game', id);
+  assert.deepEqual(await fsp.readFile(file), before);
+  const stale = completeSelectionCapture(old.events[0].at, 'b'.repeat(32));
+  const replayed = await persistSave(root, stale, 'game', `game-${stale.sessionId}`);
+  assert.deepEqual(replayed.latestCapture, next.latestCapture);
+  assert.equal((await listSaves(root)).length, 1);
+});
+test('imported markers, mismatched sessions and invalid event dates do not confirm a Mod capture', async t => {
+  const root = await temporary(t), raw = completeSelectionCapture();
+  raw.latestCapture = { id: `game-${session}`, at: raw.events[0].at };
+  assert.equal((await persistSave(root, raw, 'json', 'imported')).latestCapture, undefined);
+  // Distinct response data prevents deduplication from inheriting archive metadata.
+  raw.events[0].response.userData.userName = 'OTHER';
+  assert.equal((await persistSave(root, raw, 'game', `game-${'b'.repeat(32)}`)).latestCapture, undefined);
+  raw.events[0].at = 'not-a-date'; raw.events[0].response.userData.userName = 'INVALID DATE';
+  assert.equal((await persistSave(root, raw, 'game', `game-${session}`)).latestCapture, undefined);
+});
 test('repeated fetch compares full player data, ignores transport changes and keeps snapshot id and time', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), scope = { cardId: profiles.cards[0].id, serverId: profiles.server.id };
   const raw = { events: [event(), { ...event(), api: 'GetUserCharacterApi', response: { userId: 42, nextIndex: 0, userCharacterList: [{ characterId: 1, level: 4 }] } }] };
@@ -491,6 +711,27 @@ test('repeated fetch compares full player data, ignores transport changes and ke
   const otherScope = { ...scope, serverId: serverIdentity('other.invalid').id };
   assert.equal((await persistSave(root, raw, 'direct', 'other', otherScope)).unchanged, undefined);
 });
+test('real reads matching a local edit retain read provenance and leave export history intact', async t => {
+  for (const source of ['direct', 'game']) {
+    const root = await temporary(t), scope = { serverId: 'a'.repeat(64), cardId: 'b'.repeat(64) };
+    const raw = completeSelectionCapture();
+    const old = structuredClone(raw); old.events[1].response.userMusicList[0].userMusicDetailList[0].techScoreMax = 800000;
+    await persistSave(root, old, 'direct', 'original', scope);
+    const edited = { ...raw, saveEdit: { version: 1, parentId: 'original', playerId: 'player-a', createdAt: '2030-01-01T00:00:00Z', resources: [{ key: 'data:point', value: 100 }], scores: [] } };
+    await persistSave(root, edited, 'json', 'local-edit', scope);
+    const localFile = path.join(saveDirectory(root), 'archives', 'local-edit.json'), originalLocal = await fsp.readFile(localFile);
+    assert.equal(saveFingerprint(edited), saveFingerprint(raw));
+    const id = source === 'game' ? `game-${session}` : 'fresh-direct';
+    const read = await persistSave(root, raw, source, id, scope);
+    assert.equal(read.id, id); assert.equal(read.source, source); assert.equal(read.edit, undefined);
+    if (source === 'game') assert.deepEqual(read.latestCapture, { id, at: raw.events[0].at });
+    assert.deepEqual(await fsp.readFile(localFile), originalLocal);
+    assert.equal((await listSaves(root)).length, 3);
+    assert.equal((await persistSave(root, raw, source, id, scope)).unchanged, true);
+    assert.equal((await listSaves(root)).length, 3);
+  }
+});
+
 test('fingerprint preserves positional deck arrays and every resource, while normalizing keyed records', () => {
   const a = { events: [{ api: 'GetUserItemApi', response: { nextIndex: -1, userItemList: [{ itemId: 1, stock: 2 }, { itemId: 2, stock: 3 }] } }] };
   const b = structuredClone(a); b.events[0].response.userItemList.reverse(); b.events[0].response.nextIndex = 0;
@@ -535,89 +776,240 @@ test('deleted capture sessions cannot return after polling or restart, including
   assert.equal((await listSaves(root)).length, 1);
 });
 
-test('JSON imports keep server identity and cannot be removed from another server or the unknown-source group', async t => {
-  const root = await profileRoot(t), firstServer = (await playerProfiles(root)).server.id;
-  const a = await importManagedPlayerSave(root, fixture, firstServer);
-  assert.equal(a.serverId, firstServer); assert.equal(a.scope, undefined);
+test('JSON import uses the selected local player and preserves foreign machine/card data only in the original raw', async t => {
+  const root = await profileRoot(t), state = await playerProfiles(root), dir = saveDirectory(root);
+  const files = [path.join(dir, 'profiles.json'), path.join(root, 'segatools.ini'), path.join(root, 'card.txt')], before = await Promise.all(files.map(file => fsp.readFile(file)));
+  const raw = {...munetFixture(), machine: importMachineB, accessCode: '00123456789012345678'};
+  const a = await importManagedPlayerSave(root, raw, state.server.id);
+  assert.equal(a.localPlayerId, state.selectedPlayerId); assert.deepEqual(a.scope, {cardId: state.defaultCardId, serverId: state.server.id});
+  assert.equal(a.serverId, state.server.id); assert.equal(a.scores[1].difficulty, 4);
+  const archived = JSON.parse(await fsp.readFile(path.join(dir, 'archives', `${a.id}.json`), 'utf8'));
+  assert.deepEqual(archived.raw, raw); assert.equal(archived.raw.userMusicDetailList[1].level, 10);
+  const next = await playerProfiles(root);
+  assert.deepEqual(next.machines, state.machines); assert.equal(next.players.length, state.players.length); assert.equal(next.cards.length, state.cards.length);
+  assert.equal(next.selectedPlayerId, state.selectedPlayerId); assert.equal(next.activeMachineId, state.activeMachineId);
+  assert.deepEqual(next.players[0], {...state.players[0], importedSaveIds: [a.id]});
+  assert.deepEqual(await Promise.all(files.map(file => fsp.readFile(file))), before);
+  assert.equal((await scopedPlayerSaves(root)).find(save => save.id === a.id).localPlayerId, state.selectedPlayerId);
   await assert.rejects(deleteManagedPlayerSaves(root, [a.id], null), /分组已变化/);
-  await fsp.writeFile(path.join(root, 'segatools.ini'), '[dns]\ndefault=server-b.invalid');
-  const secondServer = (await playerProfiles(root)).server.id;
-  const b = await importManagedPlayerSave(root, fixture, secondServer);
-  assert.notEqual(a.serverId, b.serverId);
-  await assert.rejects(importManagedPlayerSave(root, fixture, firstServer), /配置已变化/);
-  await assert.rejects(deleteManagedPlayerSaves(root, [a.id], {serverId:secondServer}), /分组已变化/);
-  await deleteManagedPlayerSaves(root, [b.id], {serverId:secondServer});
-  assert.deepEqual((await listSaves(root)).map(save=>save.id), [a.id]);
-  const local = await importManagedPlayerSave(root, fixture, null);
-  assert.equal(local.serverId, undefined);
-  await deleteManagedPlayerSaves(root, [local.id], null);
-  assert.deepEqual((await listSaves(root)).map(save=>save.id), [a.id]);
+  await deleteManagedPlayerSaves(root, [a.id], {localPlayerId: state.selectedPlayerId});
+  assert.equal((await listSaves(root)).length, 0);
+});
+
+async function alternateImportPlayer(root) {
+  const state = await playerProfiles(root), cardId = await addPlayerCard(root, '98765432109876543210');
+  const machine = await saveMachineProfile(root, (await playerProfiles(root)).cards, {name: '目标机台 B', values: importMachineB}, async () => { throw Error('local draft must not activate'); });
+  const playerId = await savePlayerProfile(root, (await playerProfiles(root)).cards, {name: '明确目标 B', machineId: machine.id, cardId});
+  return {state, cardId, machine, playerId};
+}
+test('explicit JSON destination overrides current selection without interpreting source machine or card metadata', async t => {
+  const root = await profileRoot(t), target = await alternateImportPlayer(root), dir = saveDirectory(root);
+  const before = await playerProfiles(root), gameFiles = [path.join(root, 'segatools.ini'), path.join(root, 'card.txt'), path.join(dir, 'profiles.json')];
+  const bytes = await Promise.all(gameFiles.map(file => fsp.readFile(file)));
+  const raw = {...fixture, accessCode: '00123456789012345678', machine: {dns: {default: 'file:///not-a-source-to-interpret'}}};
+  const saved = await importManagedPlayerSave(root, raw, target.state.server.id, target.playerId);
+  assert.equal(saved.localPlayerId, target.playerId); assert.deepEqual(saved.scope, {cardId: target.cardId, serverId: target.machine.server.id});
+  assert.equal(saved.serverId, target.machine.server.id);
+  assert.deepEqual(JSON.parse(await fsp.readFile(path.join(dir, 'archives', `${saved.id}.json`))).raw, raw);
+  const after = await playerProfiles(root), expected = structuredClone(before);
+  expected.players.find(player => player.id === target.playerId).importedSaveIds = [saved.id];
+  assert.deepEqual(after, expected); assert.deepEqual(await Promise.all(gameFiles.map(file => fsp.readFile(file))), bytes);
+});
+
+test('selection changed while a JSON archive is being written cannot migrate its initial destination', async t => {
+  const root = await profileRoot(t), target = await alternateImportPlayer(root), before = await playerProfiles(root);
+  let entered, release;
+  const paused = new Promise(resolve => { entered = resolve; }), resume = new Promise(resolve => { release = resolve; });
+  const originalWrite = fsp.writeFile, archiveDir = path.join(saveDirectory(root), 'archives'); let intercepted = false;
+  fsp.writeFile = async function(file, ...args) {
+    if (!intercepted && typeof file === 'string' && path.dirname(file) === archiveDir && file.endsWith('.tmp')) {
+      intercepted = true; entered(); await resume;
+    }
+    return originalWrite.call(this, file, ...args);
+  };
+  let pending;
+  try {
+    pending = importManagedPlayerSave(root, fixture, before.server.id);
+    const timer = new Promise((_, reject) => { const id = setTimeout(() => reject(Error('archive write pause was not reached')), 2000); paused.finally(() => clearTimeout(id)); });
+    await Promise.race([paused, timer]);
+    await selectPlayerProfile(root, before.cards, target.playerId);
+    release();
+    const saved = await pending;
+    assert.equal(saved.localPlayerId, before.selectedPlayerId); assert.deepEqual(saved.scope, {cardId: before.defaultCardId, serverId: before.server.id});
+    const after = await playerProfiles(root);
+    assert.equal(after.selectedPlayerId, target.playerId); assert.equal(after.activeMachineId, before.activeMachineId);
+    assert.equal(after.machines.length, before.machines.length); assert.equal(after.players.length, before.players.length);
+    assert.ok(after.players.find(player => player.id === before.selectedPlayerId).importedSaveIds.includes(saved.id));
+    assert.equal(after.players.find(player => player.id === target.playerId).importedSaveIds, undefined);
+  } finally {
+    release(); fsp.writeFile = originalWrite;
+    if (pending) await pending.catch(() => {});
+  }
+});
+
+test('deleted, missing, and empty JSON destinations reject without falling back when any players exist', async t => {
+  const root = await profileRoot(t), target = await alternateImportPlayer(root);
+  await deletePlayerProfile(root, (await playerProfiles(root)).cards, target.playerId);
+  const dir = saveDirectory(root), stationFile = path.join(dir, 'stations.json'), profileFile = path.join(dir, 'profiles.json');
+  const before = await Promise.all([stationFile, profileFile].map(file => fsp.readFile(file)));
+  for (const id of [target.playerId, 'missing-player', '', '../invalid']) await assert.rejects(importManagedPlayerSave(root, {...fixture, machine: importMachineB, accessCode: '00123456789012345678'}, null, id));
+  assert.deepEqual(await Promise.all([stationFile, profileFile].map(file => fsp.readFile(file))), before);
+  assert.equal((await listSaves(root)).length, 0);
+  const state = JSON.parse(before[0]); state.selectedPlayerId = ''; const noSelection = JSON.stringify(state); await fsp.writeFile(stationFile, noSelection);
+  await assert.rejects(importManagedPlayerSave(root, fixture, null), /玩家|选择/);
+  assert.equal(await fsp.readFile(stationFile, 'utf8'), noSelection); assert.equal((await listSaves(root)).length, 0);
+});
+
+test('selected-player import at the 500 archive-reference limit rolls back only its new archive', async t => {
+  const root = await profileRoot(t), state = await playerProfiles(root), dir = saveDirectory(root), stationFile = path.join(dir, 'stations.json');
+  await persistSave(root, fixture, 'json', 'keep-older');
+  const store = JSON.parse(await fsp.readFile(stationFile, 'utf8'));
+  store.players.find(player => player.id === state.selectedPlayerId).importedSaveIds = Array.from({length:500}, (_, n) => `existing-import-${n}`);
+  await fsp.writeFile(stationFile, JSON.stringify(store));
+  const files = [stationFile, path.join(dir, 'profiles.json'), path.join(dir, 'archives', 'keep-older.json'), path.join(root, 'segatools.ini'), path.join(root, 'card.txt')];
+  const before = await Promise.all(files.map(file => fsp.readFile(file)));
+  await assert.rejects(importManagedPlayerSave(root, {...fixture, machine: importMachineB, accessCode: '00123456789012345678'}, state.server.id, state.selectedPlayerId), /最多关联 500/);
+  assert.deepEqual(await Promise.all(files.map(file => fsp.readFile(file))), before);
+  assert.deepEqual((await listSaves(root)).map(save => save.id), ['keep-older']);
+  assert.deepEqual((await fsp.readdir(path.join(dir, 'archives'))).sort(), ['keep-older.json']);
 });
 
 
-test('JSON imports match normalized access codes to the correct existing card', async t => {
+test('empty-roster fallback matches normalized access codes to the correct existing card', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), serverId = profiles.server.id;
   const other = await addPlayerCard(root, '98765432109876543210');
-  const raw = { ...fixture, userData: { ...fixture.userData, access_code: '1234-5678 9012 3456 7890' }, rivalList: [{ accessCode: '98765432109876543210' }] };
+  await clearPlayerRoster(root);
+  const raw = { ...fixture, machine: importMachineA, userData: { ...fixture.userData, access_code: '1234-5678 9012 3456 7890' }, rivalList: [{ accessCode: '98765432109876543210' }] };
   const ini = await fsp.readFile(path.join(root, 'segatools.ini'));
   const imported = await importManagedPlayerSave(root, raw, serverId);
   assert.deepEqual(imported.scope, { serverId, cardId: profiles.defaultCardId });
   assert.notEqual(imported.scope.cardId, other);
+  assert.equal(imported.localPlayerId, (await playerProfiles(root)).selectedPlayerId);
   assert.deepEqual((await scopedPlayerSaves(root)).find(s => s.id === imported.id).scope, imported.scope);
   assert.deepEqual(JSON.parse(await fsp.readFile(path.join(saveDirectory(root), 'archives', `${imported.id}.json`))).raw, raw);
   assert.equal((await playerProfiles(root)).cards.length, 2);
   assert.deepEqual(await fsp.readFile(path.join(root, 'segatools.ini')), ini);
 });
 
-test('new imported cards are added once and their snapshots remain separate', async t => {
+test('empty-roster fallback adds a new source card once and keeps imported snapshots separate', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), accessCode = '00123456789012345678';
-  const raw = { ...fixture, accessCode };
+  await clearPlayerRoster(root);
+  const raw = { ...fixture, machine: importMachineA, accessCode };
   const [a, b] = await Promise.all([importManagedPlayerSave(root, raw, profiles.server.id), importManagedPlayerSave(root, raw, profiles.server.id)]);
   assert.notEqual(a.id, b.id); assert.equal(a.scope.cardId, cardIdentity(accessCode)); assert.deepEqual(a.scope, b.scope);
   assert.equal((await playerProfiles(root)).cards.filter(card => card.accessCode === accessCode).length, 1);
+  assert.equal(a.localPlayerId, b.localPlayerId);
   assert.equal((await listSaves(root)).length, 2);
   await fsp.writeFile(path.join(root, 'segatools.ini'), '[dns]\ndefault=server-b.invalid');
   const serverB = (await playerProfiles(root)).server.id;
+  await clearPlayerRoster(root);
   const c = await importManagedPlayerSave(root, raw, serverB);
-  assert.equal(c.scope.cardId, a.scope.cardId); assert.notEqual(c.scope.serverId, a.scope.serverId);
+  assert.equal(c.scope.cardId, a.scope.cardId); assert.equal(c.scope.serverId, a.scope.serverId);
 });
 
-test('ambiguous, masked or numeric card identities stay unassigned and invalid imports add no cards', async t => {
+test('empty-roster fallback keeps ambiguous, masked or numeric card identities pending and invalid imports add no cards', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), serverId = profiles.server.id;
+  await clearPlayerRoster(root);
   const before = await fsp.readFile(path.join(saveDirectory(root), 'profiles.json'));
   for (const identity of [{ accessCode: '1234 **** **** **** ****' }, { accessCode: 12345678901234567890 }, { accessCode: ownConnection.accessCode, cardNumber: '98765432109876543210' }, { cardId: ownConnection.accessCode }]) {
+    await clearPlayerRoster(root);
     assert.equal((await importManagedPlayerSave(root, { ...fixture, ...identity }, serverId)).scope, undefined);
   }
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, { ...fixture, accessCode: ownConnection.accessCode }, null)).scope, undefined);
   await assert.rejects(importManagedPlayerSave(root, { accessCode: '98765432109876543210' }, serverId), /未识别/);
   assert.deepEqual(await fsp.readFile(path.join(saveDirectory(root), 'profiles.json')), before);
 });
 
-test('toolbox exports retain verified card groups without crossing their original server', async t => {
+test('empty-roster fallback retains verified export groups and refuses conflicting card evidence', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), scope = { serverId: profiles.server.id, cardId: profiles.defaultCardId };
   const saved = await persistSave(root, fixture, 'direct', 'original', scope);
   const exported = { summary: saved, raw: fixture };
+  await clearPlayerRoster(root);
   assert.deepEqual((await importManagedPlayerSave(root, exported, scope.serverId)).scope, scope);
   const conflict = { ...exported, raw: { ...fixture, accessCode: '98765432109876543210' } };
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, conflict, scope.serverId)).scope, undefined);
   assert.equal((await playerProfiles(root)).cards.length, 1);
   await fsp.writeFile(path.join(root, 'segatools.ini'), '[dns]\ndefault=server-b.invalid');
-  await assert.rejects(importManagedPlayerSave(root, exported, (await playerProfiles(root)).server.id), /其他服务器/);
+  await clearPlayerRoster(root);
+  const imported = await importManagedPlayerSave(root, {...exported, machine: importMachineA}, (await playerProfiles(root)).server.id);
+  assert.deepEqual(imported.scope, scope); assert.ok(imported.localPlayerId);
 });
 
-test('raw exports without a card only inherit a unique exact endpoint/player mapping on the same server', async t => {
+test('empty-roster fallback uses only a unique exact endpoint/player mapping and never invents a card', async t => {
   const root = await profileRoot(t), profiles = await playerProfiles(root), scope = { serverId: profiles.server.id, cardId: profiles.defaultCardId };
   const raw = { events: [event()] };
   await persistSave(root, raw, 'direct', 'direct-map', scope);
+  await clearPlayerRoster(root);
   assert.deepEqual((await importManagedPlayerSave(root, raw, scope.serverId)).scope, scope);
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, fixture, scope.serverId)).scope, undefined);
   const masked = { ...raw, accessCode: '1234 **** **** **** ****' };
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, masked, scope.serverId)).scope, undefined);
   const other = { serverId: scope.serverId, cardId: await addPlayerCard(root, '98765432109876543210') };
   await persistSave(root, raw, 'direct', 'other-map', other);
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, raw, scope.serverId)).scope, undefined);
   await fsp.writeFile(path.join(root, 'segatools.ini'), '[dns]\ndefault=server-b.invalid');
+  await clearPlayerRoster(root);
   assert.equal((await importManagedPlayerSave(root, raw, (await playerProfiles(root)).server.id)).scope, undefined);
+});
+
+test('only an empty roster creates a source player on the imported machine without activating it', async t => {
+  const root = await profileRoot(t), initial = await playerProfiles(root), before = await fsp.readFile(path.join(root, 'segatools.ini'));
+  await clearPlayerRoster(root);
+  const raw = {...fixture, machine:importMachineB, accessCode:ownConnection.accessCode};
+  const saved = await importManagedPlayerSave(root, raw, initial.server.id), state = await playerProfiles(root);
+  const player = state.players.find(player => player.id === saved.localPlayerId), machine = state.machines.find(machine => machine.id === player.machineId);
+  assert.deepEqual(machine.values, importMachineB); assert.notEqual(machine.id, initial.activeMachineId);
+  assert.equal(state.activeMachineId, initial.activeMachineId); assert.equal(state.selectedPlayerId, player.id);
+  assert.equal(state.players.length, 1); assert.equal(state.cards.length, 1);
+  assert.deepEqual(saved.scope, {cardId:initial.defaultCardId,serverId:serverIdentity(importMachineB.dns.default,importMachineB.dns.AimeDB).id});
+  assert.deepEqual(await fsp.readFile(path.join(root, 'segatools.ini')), before);
+});
+
+test('pending imports become card-associated only after an explicit local player edit', async t => {
+  const root = await profileRoot(t), state = await playerProfiles(root);
+  await clearPlayerRoster(root);
+  const saved = await importManagedPlayerSave(root, {...fixture,machine:importMachineB}, null), next = await playerProfiles(root);
+  const player = next.players.find(player => player.id === saved.localPlayerId), ini = await fsp.readFile(path.join(root, 'segatools.ini'));
+  const archiveFile = path.join(saveDirectory(root), 'archives', saved.id + '.json'), archive = await fsp.readFile(archiveFile);
+  assert.equal(saved.scope, undefined); assert.equal(player.cardId, '');
+  const {savePlayerProfile,selectPlayerProfile} = load('machine-profiles');
+  await savePlayerProfile(root, next.cards, {id:player.id,name:'玩家 2',machineId:player.machineId,cardId:state.defaultCardId});
+  const scoped = (await scopedPlayerSaves(root)).find(save => save.id === saved.id);
+  assert.equal(scoped.scope.cardId, state.defaultCardId); assert.equal(scoped.localPlayerId, player.id);
+  await selectPlayerProfile(root, next.cards, player.id);
+  const connection = await requirePlayerScope(root,state.defaultCardId,scoped.scope.serverId);
+  assert.equal(connection.config.server,importMachineB.dns.default);
+  assert.deepEqual(await fsp.readFile(archiveFile),archive); assert.deepEqual(await fsp.readFile(path.join(root,'segatools.ini')),ini);
+  await deleteManagedPlayerSaves(root,[saved.id],{localPlayerId:player.id}); assert.equal((await listSaves(root)).length,0);
+});
+
+test('invalid source imports create no card, player, machine or archive', async t => {
+  const root = await profileRoot(t); await playerProfiles(root);
+  await clearPlayerRoster(root);
+  const paths = ['profiles.json','stations.json'].map(file => path.join(saveDirectory(root),file));
+  const before = await Promise.all(paths.map(file=>fsp.readFile(file)));
+  await assert.rejects(importManagedPlayerSave(root,{...fixture,accessCode:'00123456789012345678',machine:{...importMachineA,dns:{...importMachineA.dns,default:'file:///invalid'}}},null),/配置无效/);
+  assert.deepEqual(await Promise.all(paths.map(file=>fsp.readFile(file))),before); assert.equal((await listSaves(root)).length,0);
+});
+
+test('top-level import failure at profile capacity rolls back only its new card and archive', async t => {
+  const root = await profileRoot(t), initial = await playerProfiles(root);
+  await clearPlayerRoster(root);
+  await persistSave(root, fixture, 'json', 'older-archive');
+  const dir = saveDirectory(root), stationFile = path.join(dir, 'stations.json'), store = JSON.parse(await fsp.readFile(stationFile, 'utf8'));
+  for (let index = 1; index < 100; index++) store.machines.push({id:`fixture-machine-${index}`,name:`机台 ${index+1}`,values:{...importMachineA,keychip:{...importMachineA.keychip,id:`D${String(index).padStart(10,'0')}`}}});
+  await fsp.writeFile(stationFile, JSON.stringify(store));
+  const files = [stationFile,path.join(dir,'profiles.json'),path.join(dir,'archives','older-archive.json'),path.join(root,'segatools.ini'),path.join(root,'card.txt')];
+  const before = await Promise.all(files.map(file=>fsp.readFile(file)));
+  await assert.rejects(importManagedPlayerSave(root,{...fixture,machine:importMachineB,accessCode:'00123456789012345678'},null),/100 个机台/);
+  assert.deepEqual(await Promise.all(files.map(file=>fsp.readFile(file))),before);
+  assert.deepEqual((await listSaves(root)).map(save=>save.id),['older-archive']);
+  assert.equal((await playerProfiles(root)).cards.length,initial.cards.length);
 });
 
 test('recent activity uses actual music timestamps without inventing difficulty or best scores', async t => {
@@ -660,4 +1052,33 @@ test('rating fields survive parsing, legacy max-score sentinel and in-memory arc
   const invalid=summarizeSave({...raw,userData:{newPlayerRating:-1},userMusicList:[{userMusicDetailList:[{...score,techScoreRank:13,platinumScoreStar:7}]}]},'json');
   assert.equal(invalid.newPlayerRating,undefined);assert.equal(invalid.scores[0].techScoreRank,undefined);assert.equal(invalid.scores[0].platinumScoreStar,undefined);
   assert.equal(summarizeSave({...raw,userData:{newPlayerRating:0}},'json').newPlayerRating,0);
+});
+
+test('game full-score repetition counters remain raw while local display clamps at the technical maximum', () => {
+  const raw = {userData:{userName:'COUNTER'}, userMusicDetailList:[{...score,techScoreMax:1019999}]};
+  assert.equal(summarizeSave(raw,'json').scores[0].techScore,1010000);
+  assert.equal(raw.userMusicDetailList[0].techScoreMax,1019999);
+  assert.throws(() => summarizeSave({...raw,userMusicDetailList:[{...score,techScoreMax:1020000}]},'json'),/成绩字段无效/);
+});
+
+test('saved edit provenance does not become a second score source and stale remote rating is excluded', () => {
+  const saveEdit = {version:1,parentId:'original',playerId:'player-a',createdAt:'2026-10-03T00:00:00Z',resources:[{key:'data:point',value:100}],scores:[{musicId:101,difficulty:3,techScore:1010000,platinumScore:0,battleScore:0,fullCombo:true,fullBell:true,allBreak:true}]};
+  const raw = {userData:{userName:'EDITOR',point:100,newPlayerRating:20000},userMusicDetailList:[{...score,techScoreMax:900000}],saveEdit};
+  const result = summarizeSave(raw,'json');
+  assert.equal(result.scores[0].techScore,900000);
+  assert.equal(result.newPlayerRating,undefined);
+  assert.deepEqual(result.edit,saveEdit);
+  assert.equal(result.inventory.items.find(item=>item.itemKind===6).stock,100);
+  assert.throws(()=>summarizeSave({...raw,saveEdit:{...saveEdit,resources:[...saveEdit.resources,...saveEdit.resources]}},'json'),/修改存档字段无效/);
+});
+
+test('nested toolbox exports keep saved edit metadata and reject excessively nested wrappers', () => {
+  const edit = { version: 1, parentId: 'source', playerId: 'player', createdAt: '2026-10-03T00:00:00Z', resources: [{ key: 'data:point', value: 150 }], scores: [] };
+  const payload = { userData: { userName: 'Nested fixture', point: 150, newPlayerRating: 12345 }, userMusicDetailList: [{ ...score }], saveEdit: edit };
+  const wrap = value => ({ summary: { scores: [], playerName: 'Stale wrapper', newPlayerRating: 99999 }, raw: value });
+  const summary = summarizeSave(wrap(wrap(payload)), 'json');
+  assert.deepEqual(summary.edit, edit); assert.equal(summary.newPlayerRating, undefined); assert.equal(summary.playerName, 'Nested fixture');
+  assert.equal(summary.scores.length, 1);
+  let deep = payload; for (let i = 0; i < 25; i++) deep = wrap(deep);
+  assert.throws(() => summarizeSave(deep, 'json'), /嵌套过深/);
 });

@@ -33,7 +33,7 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
         var enabledMods = kind == GameConfigurationFileKind.Mu3
             ? GameConfigurationInspector.GetEnabledModNames(installation.RootPath)
             : null;
-        foreach (var edit in edits)
+        foreach (var edit in OrderEdits(edits))
         {
             var requestedKeychipComment = IsKeychipId(kind, edit.Section, edit.Key)
                 && string.IsNullOrWhiteSpace(edit.NewValue);
@@ -99,7 +99,8 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
                 changes.Add(new(edit.Section, edit.Key, "未设置", edit.NewValue, 0));
                 continue;
             }
-            var source = document.Lines.ElementAtOrDefault(edit.LineNumber - 1);
+            var currentLineNumber = CurrentLineNumber(document, edit.LineNumber);
+            var source = document.Lines.ElementAtOrDefault(currentLineNumber - 1);
             if (source is null || source.Kind != IniLineKind.KeyValue || source.Key is null)
             {
                 errors.Add($"第 {edit.LineNumber} 行不再是有效配置项。");
@@ -114,7 +115,7 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
                 && string.IsNullOrWhiteSpace(edit.NewValue);
             if (edit.Remove || shouldCommentKeychip)
             {
-                document = document.WithCommentedOutValue(edit.LineNumber);
+                document = document.WithCommentedOutValue(currentLineNumber);
                 changes.Add(new(source.Section, source.Key, edit.OriginalValue, "已注释", edit.LineNumber));
                 continue;
             }
@@ -126,7 +127,7 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
                 continue;
             }
             if (string.Equals(edit.OriginalValue, edit.NewValue, StringComparison.Ordinal)) continue;
-            document = document.WithValue(edit.LineNumber, edit.NewValue);
+            document = document.WithValue(currentLineNumber, edit.NewValue);
             changes.Add(new(source.Section, source.Key, edit.OriginalValue, edit.NewValue, edit.LineNumber));
         }
         if (changes.Count == 0 && errors.Count == 0) errors.Add("新值与当前值相同。");
@@ -150,12 +151,15 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
         var path = ResolvePath(installation, confirmedPreview.Kind);
         var originalBytes = await File.ReadAllBytesAsync(path, cancellationToken);
         var document = RoundTripIniDocument.Parse(originalBytes);
-        foreach (var edit in edits)
+        foreach (var edit in OrderEdits(edits))
+        {
+            var currentLineNumber = edit.LineNumber == 0 ? 0 : CurrentLineNumber(document, edit.LineNumber);
             document = edit.Remove || IsKeychipId(edit.Section, edit.Key) && string.IsNullOrWhiteSpace(edit.NewValue)
-                ? document.WithCommentedOutValue(edit.LineNumber)
+                ? document.WithCommentedOutValue(currentLineNumber)
                 : edit.LineNumber == 0
                 ? document.WithAddedValue(edit.Section, edit.Key, edit.NewValue)
-                : document.WithValue(edit.LineNumber, edit.NewValue);
+                : document.WithValue(currentLineNumber, edit.NewValue);
+        }
         var proposedBytes = document.ToBytes();
 
         var installationId = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
@@ -187,6 +191,19 @@ public sealed class GameConfigurationEditor : IGameConfigurationEditor
         try { await AppendOperationAsync(backupRoot, installationId, result, freshPreview.Changes, cancellationToken); }
         catch (IOException) { /* The configuration and backup are already durable; logging is best effort. */ }
         return result;
+    }
+
+    // Additions reparse and renumber the document, so apply edits to original lines first.
+    private static IEnumerable<ConfigurationEdit> OrderEdits(IReadOnlyList<ConfigurationEdit> edits) =>
+        edits.OrderBy(edit => edit.LineNumber == 0);
+
+    private static int CurrentLineNumber(RoundTripIniDocument document, int originalLineNumber)
+    {
+        // Commenting out AimeDB can remove old placeholders. Remaining lines retain
+        // their original IDs even when their physical positions have moved.
+        for (var index = 0; index < document.Lines.Count; index++)
+            if (document.Lines[index].LineNumber == originalLineNumber) return index + 1;
+        return 0;
     }
 
     private static string ResolvePath(GameInstallation installation, GameConfigurationFileKind kind) => kind switch

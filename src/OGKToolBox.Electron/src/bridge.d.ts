@@ -3,7 +3,7 @@ import type { ControllerCommandResult, ControllerModuleStatus, ControllerSnapsho
 import type { DownloadSource, UpdateSource, UpdateStatus } from "./update-models";
 export type { UpdateState, UpdateStatus } from "./update-models";
 
-export type GameLaunchOptions = { width: number; height: number; fullscreen: boolean };
+export type GameLaunchOptions = { width: number; height: number; fullscreen: boolean; fixOpenSsl: boolean };
 export type HddSetupInspection = {
   root: string;
   segatools: { installed: boolean; hasIni: boolean; missing: string[] };
@@ -12,18 +12,35 @@ export type HddSetupInspection = {
 };
 
 export interface OgkBridge {
+  machineProfiles(root: string): Promise<import("./machine-profile-models").MachineProfilesState>;
+  saveMachineProfile(root: string, request: import("./machine-profile-models").SaveMachineProfileRequest): Promise<import("./machine-profile-models").MachineProfile>;
+  activateMachineProfile(root: string, id: string): Promise<void>;
+  deleteMachineProfile(root: string, id: string): Promise<void>;
+  setVirtualPlayerCard(root: string, cardId: string): Promise<void>;
+  savePlayerProfile(root: string, request: import("./machine-profile-models").SavePlayerProfileRequest): Promise<string>;
+  selectPlayerProfile(root: string, id: string): Promise<void>;
+  deletePlayerProfile(root: string, id: string): Promise<void>;
   playerSaves(root: string): Promise<import("./player-save-models").PlayerSaveState>;
   addPlayerCard(root: string, code: string): Promise<string>;
   reorderPlayerCards(root: string, ids: string[]): Promise<void>;
-  deletePlayerSaves(root: string, ids: string[], scope: { cardId?: string; serverId: string } | null): Promise<void>;
+  deletePlayerSaves(root: string, ids: string[], scope: { cardId?: string; serverId: string } | { localPlayerId: string } | null): Promise<void>;
   bindPlayerSave(root: string, saveId: string, cardId: string, serverId: string): Promise<void>;
   playerDefaultAccessCode(root: string): Promise<string>;
   fetchConfiguredPlayerSave(root: string, cardId: string, serverId: string): Promise<import("./player-save-models").PlayerSave>;
-  importPlayerSave(root: string, serverId: string | null): Promise<import("./player-save-models").PlayerSave | null>;
+  mergePlayerBest(root: string, targetId: string, sourceIds: string[], cardId: string, serverId: string): Promise<import("./player-save-models").PlayerSave>;
+  uploadPlayerBest(root: string, saveId: string, cardId: string, serverId: string): Promise<{ save: import("./player-save-models").PlayerSave; uploadedCharts: number }>;
+  playerUploadPolicy(root: string, cardId: string, serverId: string): Promise<import("./player-upload-policy").PlayerUploadPolicy>;
+  getPlayerSaveEditor(root: string, saveId: string, playerId: string): Promise<import("./player-save-editor-models").PlayerSaveEditorState>;
+  playerSaveEditStatus(root: string, saveId: string, playerId: string): Promise<import("./player-save-editor-models").PendingPlayerEdit | undefined>;
+  queuePlayerSaveEdit(root: string, saveId: string, playerId: string, patch: import("./player-save-editor-models").PlayerSaveEditorPatch): Promise<import("./player-save-editor-models").PendingPlayerEdit>;
+  cancelPlayerSaveEdit(root: string, saveId: string, playerId: string, id: string, discardActive: boolean): Promise<void>;
+  savePlayerSaveEditor(root: string, saveId: string, playerId: string, patch: import("./player-save-editor-models").PlayerSaveEditorPatch): Promise<import("./player-save-models").PlayerSave>;
+  importPlayerSave(root: string, serverId: string | null, playerId?: string): Promise<import("./player-save-models").PlayerSave | null>;
   setPlayerCapture(root: string, enabled: boolean): Promise<import("./player-save-models").CaptureState>;
   refreshPlayerSave(root: string, saveId: string, cardId: string, serverId: string): Promise<import("./player-save-models").PlayerSave>;
   cancelPlayerRefresh(): void;
   exportPlayerSave(root: string, id: string): Promise<boolean>;
+  savePlayerScoreImage(request: { dataUrl: string; fileName?: string }): Promise<boolean>;
   chooseGameDirectory(): Promise<string | null>;
   prepareGameLauncher(root: string, options?: GameLaunchOptions): Promise<{ fileName: string }>;
   launchGame(root: string, options?: GameLaunchOptions): Promise<{ fileName: string }>;

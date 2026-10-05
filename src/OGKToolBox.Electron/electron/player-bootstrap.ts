@@ -66,9 +66,9 @@ export async function playerConnectionDefaults(root: string): Promise<PlayerConn
   return { server: values.get("dns.default") ?? "", keychip: values.get("keychip.id") ?? "", accessCode, version: "1.50", aimeServer: values.get("dns.aimedb") ?? "" };
 }
 
-function postPowerOn(url: URL, body: Buffer, signal?: AbortSignal): Promise<{ body: Buffer; dfi: boolean }> {
+function postPowerOn(url: URL, body: Buffer, signal?: AbortSignal, omitUserAgent = false): Promise<{ body: Buffer; dfi: boolean }> {
   return new Promise((resolve, reject) => {
-    const req = (url.protocol === "https:" ? https : http).request(url, { method: "POST", signal, headers: { "User-Agent": agent, "Content-Type": "application/x-www-form-urlencoded", "Pragma": "DFI", "Content-Length": body.length, "Connection": "close" } }, response => {
+    const req = (url.protocol === "https:" ? https : http).request(url, { method: "POST", signal, headers: { ...(omitUserAgent ? {} : { "User-Agent": agent }), "Content-Type": "application/x-www-form-urlencoded", "Pragma": "DFI", "Content-Length": body.length, "Connection": "close" } }, response => {
       if (response.statusCode !== 200) { response.resume(); reject(new Error(`服务器地址发现返回 HTTP ${response.statusCode}，请检查服务器和 Keychip。`)); return; }
       const chunks: Buffer[] = []; let length = 0;
       response.on("data", (chunk: Buffer) => { length += chunk.length; if (length > 65536) { response.destroy(new Error("地址发现响应过大。")); return; } chunks.push(chunk); });
@@ -88,12 +88,12 @@ function postPowerOn(url: URL, body: Buffer, signal?: AbortSignal): Promise<{ bo
     req.end(body);
   });
 }
-export async function discoverPlayerServer(input: PlayerConnectionInput, signal?: AbortSignal) {
+export async function discoverPlayerServer(input: PlayerConnectionInput, signal?: AbortSignal, policy?: { omitUserAgent?: boolean }) {
   if (signal?.aborted) throw new Error("已取消获取，原存档保留。");
   const config = validatePlayerConnection(input);
   const fields = new URLSearchParams({ game_id: "SDDT", ver: config.version, serial: config.keychipShort, ip: "127.0.0.1", firm_ver: "60001", boot_ver: "0000", encode: "UTF-8", format_ver: "3", hops: "1", token: String(randomInt(0, 2147483647)) });
   const body = Buffer.from(deflateSync(Buffer.from(fields.toString())).toString("base64"));
-  const result = await postPowerOn(new URL("/sys/servlet/PowerOn", config.server), body, signal);
+  const result = await postPowerOn(new URL("/sys/servlet/PowerOn", config.server), body, signal, policy?.omitUserAgent === true);
   let params: URLSearchParams;
   try {
     const decoded = result.dfi ? inflateSync(Buffer.from(result.body.toString("utf8"), "base64"), { maxOutputLength: 65536 }) : result.body;
@@ -105,7 +105,11 @@ export async function discoverPlayerServer(input: PlayerConnectionInput, signal?
   if (!["http:", "https:"].includes(api.protocol) || api.username || api.password || api.search || api.hash) throw new Error("服务器返回了不支持的游戏地址。");
   if (!api.pathname.endsWith("/")) api.pathname += "/";
   const place = Number(params.get("place_id") ?? "0");
-  return { baseUrl: api.href, placeId: Number.isSafeInteger(place) && place >= 0 && place <= 0xffffffff ? place : 0 };
+  const region = params.get("region0"), regionId = region !== null && /^\d+$/.test(region) ? Number(region) : undefined;
+  return { baseUrl: api.href, placeId: Number.isSafeInteger(place) && place >= 0 && place <= 0xffffffff ? place : 0,
+    ...(params.has("name") ? { placeName: params.get("name")! } : {}),
+    ...(params.has("region_name0") ? { regionName: params.get("region_name0")! } : {}),
+    ...(regionId !== undefined && Number.isSafeInteger(regionId) && regionId <= 2147483647 ? { regionId } : {}) };
 }
 
 function aimeCrypt(bytes: Buffer, encrypt: boolean) {
@@ -160,13 +164,14 @@ export async function lookupPlayerCard(input: PlayerConnectionInput, placeId: nu
   });
 }
 
-export function playerReadRequests(baseUrl: string, userId: number): CaptureEvent[] {
-  // Aqua-compatible plaintext API uses ordinary API names; no game digest salt or captured UA is needed.
+export function playerReadRequests(baseUrl: string, userId: number, userAgent?: (api: string, userId: number) => string): CaptureEvent[] {
+  // Ordinary independent reads retain their compatible adapter. Explicit best
+  // synchronization passes the installed game's identifier for every API.
   return [...readApis.flatMap(api => (api === "GetUserItemApi" ? itemKinds : [0]).map(kind => ({
     api, at: new Date().toISOString(), response: {},
     request: { userId, ...(["GetUserDataApi", "GetUserOptionApi"].includes(api) ? {} : { nextIndex: kind * 10000000000, maxCount: 100 }) },
-    connection: { baseUrl, encryptVersion: 0, userAgent: agent }
-  }))), { api: "GetUserActivityApi", at: new Date().toISOString(), response: {}, request: { userId, kind: 2 }, connection: { baseUrl, encryptVersion: 0, userAgent: agent } }];
+    connection: { baseUrl, encryptVersion: 0, userAgent: userAgent?.(api, userId) ?? agent }
+  }))), { api: "GetUserActivityApi", at: new Date().toISOString(), response: {}, request: { userId, kind: 2 }, connection: { baseUrl, encryptVersion: 0, userAgent: userAgent?.("GetUserActivityApi", userId) ?? agent } }];
 }
 export async function fetchPlayerFromConfiguration(root: string, input: PlayerConnectionInput, signal?: AbortSignal, services = { discover: discoverPlayerServer, lookup: lookupPlayerCard, read: readGameApi }) {
   validatePlayerConnection(input);
@@ -174,10 +179,4 @@ export async function fetchPlayerFromConfiguration(root: string, input: PlayerCo
   const userId = await services.lookup(input, discovered.placeId, signal);
   const server = serverIdentity(input.server, input.aimeServer);
   return refreshFromRequests(root, playerReadRequests(discovered.baseUrl, userId), signal, services.read, undefined, { serverId: server.id, cardId: cardIdentity(input.accessCode) });
-}
-export async function fetchPlayerFromLocalConfiguration(root: string, accessCode: string, signal?: AbortSignal, services = { discover: discoverPlayerServer, lookup: lookupPlayerCard, read: readGameApi }) {
-  if (typeof accessCode !== "string") throw new Error("卡号格式无效。");
-  const input = await playerConnectionDefaults(root);
-  input.accessCode = accessCode;
-  return fetchPlayerFromConfiguration(root, input, signal, services);
 }

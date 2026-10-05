@@ -35,7 +35,7 @@ function makeEdit(entry: any, change: Change) {
 async function saveSegatools(root: string, changes: Change[]): Promise<void> {
   const configuration = await window.ogk.inspectConfiguration(root);
   const file = (configuration.files ?? []).find((item: any) => item.kind === "SegaTools");
-  if (!file?.exists) throw new Error("未找到 segatools.ini。");
+  if (!file?.exists) throw new Error("未找到 segatools.ini，请返回 Segatools 步骤安装后重试。");
   const edits = changes.map(change => {
     const entry = findEntry(file, change.section, change.key);
     if (!entry) throw new Error(`未找到 [${change.section}] ${change.key} 配置项。`);
@@ -145,13 +145,13 @@ export function HddSetupWizard({ root, snapshot, moduleStatus, onClose, onChange
     const selected = server === "custom" ? customServer.trim() : server;
     if (!selected) { setError("请选择服务器，或填写自定义服务器地址。"); return; }
     const needsKeychip = selected === "ea.naominet.live" || selected === "play.mumur.net";
-    if (needsKeychip && !later && !keychip.trim()) { setError("请填写 Keychip，或选择稍后填写；稍后填写会自动注释此项。"); return; }
+    if (needsKeychip && !later && !keychip.trim()) { setError("请填写 Keychip，或选择“稍后填写”保留当前设置。"); return; }
     const changes: Change[] = [{ section: "dns", key: "default", value: selected }];
     if (selected === "ea.naominet.live") changes.push({ section: "dns", key: "replaceHost", value: "1" });
     const aimeDb = selected === "play.mumur.net" ? "aime.mumur.net" : "";
     changes.push({ section: "dns", key: "aimedb", value: aimeDb, removeIfEmpty: true });
     if (selected === "nageki-net.com") changes.push({ section: "keychip", key: "id", value: "" });
-    if (needsKeychip) changes.push({ section: "keychip", key: "id", value: keychip.trim() });
+    if (needsKeychip && !later) changes.push({ section: "keychip", key: "id", value: keychip.trim() });
     void save(changes, "controller");
   };
   const configureController = () => run(async () => {

@@ -11,6 +11,9 @@ C# controller Host, and the Node IO4 provider with its runtime dependencies.
 
 The build runs application tests, locked npm install, controller artifact validation, Electron tests,
 typechecking and installer generation. It checks the packaged API runtime and exact controller files.
+Release API resources exclude `OGKToolBox.Api.pdb`, `OGKToolBox.Application.pdb`,
+`OGKToolBox.Core.pdb` and `OGKToolBox.Infrastructure.pdb`; matching symbols remain available in local publish output for debugging.
+The release verifier rejects these four files if they appear in the packaged API directory.
 The supplied Host bundle version must match the app; use a compatible maintainer-supplied bundle when
 updating the app version. Do not bypass compatibility checks by changing metadata alone.
 

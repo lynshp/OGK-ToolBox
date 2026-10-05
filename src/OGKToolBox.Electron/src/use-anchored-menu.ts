@@ -13,7 +13,7 @@ export function useAnchoredMenu(host: RefObject<HTMLElement | null>, open: boole
     const width = Math.min(preferredWidth ?? rect.width, window.innerWidth - 16);
     const below = window.innerHeight - rect.bottom - gap - 8;
     const above = rect.top - gap - 8;
-    const upward = below < 180 && above > below;
+    const upward = below < Math.min(180, heightLimit) && above > below;
     const maxHeight = Math.max(0, Math.min(heightLimit, upward ? above : below));
     setMenu({ top: upward ? rect.top - gap : rect.bottom + gap,
       left: Math.max(8, Math.min(align === "end" ? rect.right - width : rect.left, window.innerWidth - width - 8)),

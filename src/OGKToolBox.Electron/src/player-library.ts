@@ -14,6 +14,11 @@ export function chartConstant(music: MusicEntry, difficulty: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
+// Catalog constants retain the game's float32 precision for rating calculations.
+// Render and search the same decimal notation used by BEST 110 instead of raw tails.
+export function formatChartConstant(value?: number) {
+  return value !== undefined && Number.isFinite(value) ? value.toFixed(2).replace(/0$/, "") : "—";
+}
 export function sortPlayerMusic<T extends MusicEntry>(items: T[], mode: string, preferred: number, scores: Map<string, PlayerScore>): T[] {
   const priority = difficultyPriority(preferred);
   return items.map((music, order) => ({ music, order, score: musicScore(scores, music.id, preferred), constant: chartConstant(music, preferred) })).sort((a, b) => {
